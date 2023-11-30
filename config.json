@@ -1,0 +1,6 @@
+{
+    "DB_NAME": "story_generator.db",
+    "WEAVIATE_ENDPOINT": "https://yourweaviateurlhere",
+    "WEAVIATE_QUERY_PATH": "/v1/graphql",
+    "LLAMA_MODEL_PATH": "llama-2-7b-chat.ggmlv3.q8_0.bin"
+}
