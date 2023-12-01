@@ -1,6 +1,9 @@
 {
     "DB_NAME": "story_generator.db",
-    "WEAVIATE_ENDPOINT": "https://yourweaviateurlhere",
+    "WEAVIATE_ENDPOINT": "https://urltoweaviatehereseedocs",
     "WEAVIATE_QUERY_PATH": "/v1/graphql",
-    "LLAMA_MODEL_PATH": "llama-2-7b-chat.ggmlv3.q8_0.bin"
+    "LLAMA_MODEL_PATH": "llama-2-7b-chat.ggmlv3.q8_0.bin",
+    "IMAGE_GENERATION_URL": "http://127.0.0.1:7860/sdapi/v1/txt2img",
+    "MAX_TOKENS": 3999,
+    "CHUNK_SIZE": 1250
 }
