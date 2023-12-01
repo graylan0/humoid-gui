@@ -25,20 +25,41 @@ from nltk import pos_tag, word_tokenize
 from nltk.corpus import wordnet as wn
 import nltk
 import json
+from os import path
 
-q = queue.Queue()
-logger = logging.getLogger(__name__)
+
+bundle_dir = path.abspath(path.dirname(__file__))
+path_to_config = path.join(bundle_dir, 'config.json')
+model_path = path.join(bundle_dir, 'llama-2-7b-chat.ggmlv3.q8_0.bin')
+logo_path = path.join(bundle_dir, 'logo.png')
 
 def download_nltk_data():
     try:
-        nltk.download('averaged_perceptron_tagger')
-        nltk.download('punkt')
-        print("NLTK Data downloaded successfully.")
+        # Define the resources to download
+        resources = {
+            'tokenizers/punkt': 'punkt',
+            'taggers/averaged_perceptron_tagger': 'averaged_perceptron_tagger'
+        }
+
+        # Check and download each resource
+        for path, package in resources.items():
+            try:
+                nltk.data.find(path)
+                print(f"'{package}' already downloaded.")
+            except LookupError:
+                nltk.download(package)
+                print(f"'{package}' downloaded successfully.")
+
     except Exception as e:
         print(f"Error downloading NLTK data: {e}")
 
 
-def load_config(file_path='config.json'):
+
+q = queue.Queue()
+logger = logging.getLogger(__name__)
+
+
+def load_config(file_path=path_to_config):
     with open(file_path, 'r') as file:
         return json.load(file)
 
@@ -47,7 +68,6 @@ config = load_config()
 DB_NAME = config['DB_NAME']
 WEAVIATE_ENDPOINT = config['WEAVIATE_ENDPOINT']
 WEAVIATE_QUERY_PATH = config['WEAVIATE_QUERY_PATH']
-LLAMA_MODEL_PATH = config['LLAMA_MODEL_PATH']
 
 client = weaviate.Client(
     url=WEAVIATE_ENDPOINT,
@@ -90,15 +110,19 @@ async def init_db():
 
 
 llm = Llama(
-    model_path=LLAMA_MODEL_PATH,
+    model_path=model_path,
     n_gpu_layers=-1,
     n_ctx=3900,
 )
 
 
-def llama_generate(prompt, max_tokens=3999, chunk_size=1250, weaviate_client=None):
-    try:
+def llama_generate(prompt, weaviate_client=None):
+    config = load_config()
+    max_tokens = config.get('MAX_TOKENS', 3999)  # Default to 3999 if not specified
+    chunk_size = config.get('CHUNK_SIZE', 1250)  # Default to 1250 if not specified
 
+    try:
+        
         def find_max_overlap(chunk, next_chunk):
             max_overlap = min(len(chunk), 400)
             for overlap in range(max_overlap, 0, -1):
@@ -404,6 +428,7 @@ class App(customtkinter.CTk):
 
 
     def on_submit(self, event=None):
+        download_nltk_data()
         message = self.entry.get().strip()
         if message:
             self.text_box.insert(tk.END, f"You: {message}\n")
@@ -454,16 +479,16 @@ class App(customtkinter.CTk):
 
     def generate_images(self, message):
         try:
-            url = 'http://127.0.0.1:7860/sdapi/v1/txt2img'
+            url = config['IMAGE_GENERATION_URL']
             payload = {
                 "prompt": message,
-                "steps" : 121,
+                "steps" : 79,
                 "seed" : random.randrange(sys.maxsize),
                 "enable_hr": "false",
                 "denoising_strength": "0.7",
                 "cfg_scale" : "7",
-                "width": 366,
-                "height": 856,
+                "width": 326,
+                "height": 656,
                 "restore_faces": "true",
             }
             response = requests.post(url, json=payload)
@@ -497,12 +522,11 @@ class App(customtkinter.CTk):
         self.grid_rowconfigure((0, 1, 2), weight=1)
         self.sidebar_frame = customtkinter.CTkFrame(self, width=440, corner_radius=0)
         self.sidebar_frame.grid(row=0, column=0, rowspan=4, sticky="nsew")
-        logo_path = os.path.join(os.getcwd(), "logo.png")
         logo_img = Image.open(logo_path)
-        base_width = 140
-        w_percent = (base_width / float(logo_img.size[0]))
-        h_size = int((float(logo_img.size[1]) * float(w_percent)))
-        logo_img = logo_img.resize((base_width, h_size), Image.ANTIALIAS)
+
+
+
+
         logo_photo = ImageTk.PhotoImage(logo_img)
         self.logo_label = customtkinter.CTkLabel(self.sidebar_frame, image=logo_photo)
         self.logo_label.image = logo_photo
@@ -524,7 +548,7 @@ class App(customtkinter.CTk):
 
 if __name__ == "__main__":
     try:
-        download_nltk_data()
+        
         app = App()
         loop = asyncio.get_event_loop()
         loop.run_until_complete(init_db())
