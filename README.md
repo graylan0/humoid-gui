@@ -4,6 +4,11 @@
 # One Love IPFS Humoid GUI Release V1.0.0
 
 ![image](https://github.com/graylan0/humoid-gui/assets/34530588/7fd5a62d-02a5-4d0e-b33f-edb04d923f55)
+
+
+
+
+
 We are thrilled to announce the first full release of Humoid GUI, version 1.0.0! This release introduces a fully functional graphical user interface application for interacting with humanoid robots or simulations. Humoid GUI combines AI, database integration, and natural language processing to provide an interactive and user-friendly experience.
 
 ## What's New in 1.0.0
