@@ -63,7 +63,7 @@ To boot up the Weaviate components using the provided `docker-compose.yml` file 
 
 1. **Ensure Docker and Docker Compose are Installed**: Make sure you have Docker and Docker Compose installed on your system.
 
-2. **Download the `docker-compose.yml` File**: Clone the repository or directly download the `docker-compose.yml` file from [here](https://github.com/graylan0/humoid-gui/docker-compose.yml).
+2. **Download the `docker-compose.yml` File**: Clone the repository or directly download the `docker-compose.yml` file from [here]([https://github.com/graylan0/humoid-gui/docker-compose.yml](https://github.com/graylan0/humoid-gui/blob/main/docker-compose.yml)).
 
 3. **Navigate to the Directory**: Open a terminal and navigate to the directory where the `docker-compose.yml` file is located.
 
