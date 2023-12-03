@@ -14,7 +14,7 @@ We are thrilled to announce the first full release of Humoid GUI, version 1.0.0!
 ## What's New in 1.0.0
 
 - **AI-Powered Conversations**: Dynamic conversations with AI, powered by the Llama natural language processing model.
-- **Database Integration**: Interactions stored in a SQLite database for persistence and analysis.
+- **Database Integration**: Interactions stored in a Vector database for persistence and analysis.
 - **Image Generation**: Generate images based on user inputs, adding a visual dimension to the interaction experience.
 
 
