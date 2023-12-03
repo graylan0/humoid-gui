@@ -77,7 +77,7 @@ To boot up the Weaviate components using the provided `docker-compose.yml` file 
 
 ### Step 2: Setting Up Backups
 
-1. **Download the Backup File**: Download the `weave_weaviate_data.tar.tar.001` file from [here](https://github.com/graylan0/ModeZion/blob/main/vecbackup/weave_weaviate_data.tar.tar.001).
+1. **Download the Backup File**: Download the `weave_weaviate_data.tar.tar.001` files part by part from [here](https://github.com/graylan0/ModeZion/blob/main/vecbackup/weave_weaviate_data.tar.tar.001).
 
 2. **Extract the Backup**: Use a tool like `tar` to extract the backup file. If the backup is split into multiple parts, you may need to combine them before extraction.
 
