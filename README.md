@@ -63,7 +63,7 @@ To boot up the Weaviate components using the provided `docker-compose.yml` file 
 
 1. **Ensure Docker and Docker Compose are Installed**: Make sure you have Docker and Docker Compose installed on your system.
 
-2. **Download the `docker-compose.yml` File**: Clone the repository or directly download the `docker-compose.yml` file from [here](https://github.com/graylan0/humoid-gui/blob/main/docker-compose.yml).
+2. **Download the `docker-compose.yml` File**: Clone the repository or directly download the `docker-compose.yml` file from [here](https://github.com/graylan0/humoid-gui/docker-compose.yml).
 
 3. **Navigate to the Directory**: Open a terminal and navigate to the directory where the `docker-compose.yml` file is located.
 
@@ -115,3 +115,13 @@ This will ensure that Weaviate starts with the data from your backup.
 - **Weaviate Configuration**: Double-check the Weaviate configuration in your `docker-compose.yml` file to ensure it aligns with your backup and intended setup.
 
 By following these steps, you should be able to boot up Weaviate with the necessary configurations and data backups for your Humoid GUI application.
+
+
+Automatic1111 Image Url (API running on localhost or the IP/url you select)
+
+1. Install Automatic1111  `sd.webui.zip` from `v1.0.0-pre here`[here](https://github.com/AUTOMATIC1111/stable-diffusion-webui/releases/tag/v1.0.0-pre) by extracting the foldering inside zip file. (Nvidia Windows 10+ setup)
+2 Start Automatic1111 by running `run.bat` . This should start the Automatic1111 WebUI and load the model to be used with the GUI program.
+3. Use Invoke's built in VAE Selected within Automatic1111's settings. Install Deliberate for invoke 08 model from [here](https://civitai.com/models/5585/deliberate-for-invoke) .
+![image](https://github.com/graylan0/ModeZion/assets/34530588/3d0c4be9-61ca-4936-9216-11b6916ee98a)
+
+
