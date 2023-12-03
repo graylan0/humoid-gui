@@ -124,6 +124,8 @@ Note: this is for building the image model (API running on localhost or the IP/u
 1. Install Automatic1111  `sd.webui.zip` from `v1.0.0-pre here`[here](https://github.com/AUTOMATIC1111/stable-diffusion-webui/releases/tag/v1.0.0-pre) by extracting the foldering inside zip file. (Nvidia Windows 10+ setup)
 2 Start Automatic1111 by running `run.bat` . This should start the Automatic1111 WebUI and load the model to be used with the GUI program.
 3. Use Invoke's built in VAE Selected within Automatic1111's settings. Install Deliberate for invoke 08 model from [here](https://civitai.com/models/5585/deliberate-for-invoke) .
+
+
 ![image](https://github.com/graylan0/ModeZion/assets/34530588/3d0c4be9-61ca-4936-9216-11b6916ee98a)
 
 
