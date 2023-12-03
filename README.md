@@ -8,11 +8,10 @@ We are thrilled to announce the first full release of Humoid GUI, version 1.0.0!
 
 ## What's New in 1.0.0
 
-- **AI-Powered Conversations**: Engage in dynamic conversations with AI, powered by the Llama natural language processing model.
-- **Database Integration**: All interactions and context are stored in a SQLite database for persistence and analysis.
+- **AI-Powered Conversations**: Dynamic conversations with AI, powered by the Llama natural language processing model.
+- **Database Integration**: Interactions stored in a SQLite database for persistence and analysis.
 - **Image Generation**: Generate images based on user inputs, adding a visual dimension to the interaction experience.
-- **Natural Language Processing**: Utilize advanced NLP techniques for analyzing and understanding user inputs.
-- **Customizable GUI**: A user-friendly interface that can be customized to suit various interaction scenarios with humanoid entities.
+
 
 ## Installation
 
@@ -21,18 +20,14 @@ Humoid GUI is now available as an executable file for Windows. Download the late
 ## System Requirements
 
 - Compatible with Windows 10 and later.
-- Minimum 4GB RAM recommended.
-- At least 500MB of free disk space.
+- Minimum 32GB RAM recommended.
+- Minimum Nvidia GPU with 12GB VRAM (Tested with 20GB RTX A4500)
+- At least 20GB of free disk space.
 
 ## Usage
 
-After downloading the all the 7zip packages part by part and extracting with 7zip, you can start Humoid GUI exe (dave_v1.exe) from your desktop or start menu. Simply look for the Humoid GUI icon and click to launch.
+After downloading the all the 7zip packages part by part and extracting with them all with 7zip, you can start Humoid GUI exe (dave_v1.exe) from your desktop or start menu by creating a shortcut.
 
-## Bug Fixes and Improvements
-
-- Improved response accuracy and speed in AI conversations.
-- Enhanced stability and performance of the image generation feature.
-- Various bug fixes and UI improvements for a smoother user experience.
 
 ## Future Plans
 
@@ -43,20 +38,10 @@ After downloading the all the 7zip packages part by part and extracting with 7zi
 
 
 
-Thank you to all contributors and members of the freedomdao community who made this project possible. Special thanks to the developers of the libraries and tools we've used in Humoid GUI.
+Thank you contributors and members of the freedomdao community who made this project possible.
 
 
 
 
 ![image](https://github.com/graylan0/humoid-gui/assets/34530588/b9644ccf-13f0-4600-bfad-b9a45ba5017c)
 
-# Humoid GUI
-
-Humoids GUI is a Python-based graphical user interface application designed for interacting with humanoid robots or simulations. It leverages various technologies including AI, databases, and natural language processing to provide a comprehensive and interactive experience.
-
-## Features
-
-- AI-driven conversation interface.
-- Database integration for storing interactions and context.
-- Image generation based on user inputs.
-- Extensive use of natural language processing for interaction analysis.
