@@ -429,14 +429,20 @@ class App(customtkinter.CTk):
 
     def on_submit(self, event=None):
         download_nltk_data()
-        message = self.entry.get().strip()
+        message = self.input_textbox.get("1.0", tk.END).strip()
         if message:
             self.text_box.insert(tk.END, f"You: {message}\n")
-            self.entry.delete(0, tk.END)
+        
+            # Clear the input_textbox after processing
+            self.input_textbox.delete("1.0", tk.END)
+            self.input_textbox.config(height=1)  # Reset the height
+
             self.text_box.see(tk.END)
             self.executor.submit(self.generate_response, message)
             self.executor.submit(self.generate_images, message)
             self.after(100, self.process_queue)
+
+        return "break"  # Prevents the default 'Return' binding
 
     def create_object(self, class_name, object_data):
 
@@ -537,13 +543,31 @@ class App(customtkinter.CTk):
         self.placeholder_photo = ImageTk.PhotoImage(placeholder_image)
         self.image_label.configure(image=self.placeholder_photo)
         self.image_label.image = self.placeholder_photo
+        # Text Box for Display (No changes here)
         self.text_box = customtkinter.CTkTextbox(self, bg_color="white", text_color="white", border_width=0, height=260, width=50, font=customtkinter.CTkFont(size=18))
         self.text_box.grid(row=0, column=1, rowspan=3, columnspan=3, padx=(20, 20), pady=(20, 20), sticky="nsew")
-        self.entry = customtkinter.CTkEntry(self, placeholder_text="Enter your prompt here")
-        self.entry.grid(row=3, column=1, columnspan=2, padx=(20, 0), pady=(20, 20), sticky="nsew")
+
+        # Frame for the new Text Input Box
+        self.input_textbox_frame = customtkinter.CTkFrame(self)
+        self.input_textbox_frame.grid(row=3, column=1, columnspan=2, padx=(20, 0), pady=(20, 20), sticky="nsew")
+        self.input_textbox_frame.grid_columnconfigure(0, weight=1)
+        self.input_textbox_frame.grid_rowconfigure(0, weight=1)
+
+        # New Text Input Box
+        self.input_textbox = tk.Text(self.input_textbox_frame, font=("Roboto Medium", 10),
+                                     bg=customtkinter.ThemeManager.theme["CTkFrame"]["fg_color"][1 if customtkinter.get_appearance_mode() == "Dark" else 0],
+                                     fg=customtkinter.ThemeManager.theme["CTkLabel"]["text_color"][1 if customtkinter.get_appearance_mode() == "Dark" else 0], relief="flat", height=1)
+        self.input_textbox.grid(padx=20, pady=20, sticky="nsew")
+
+        # Scrollbar for the new Text Input Box
+        self.input_textbox_scrollbar = customtkinter.CTkScrollbar(self.input_textbox_frame, command=self.input_textbox.yview)
+        self.input_textbox_scrollbar.grid(row=0, column=1, sticky="ns", pady=5)
+        self.input_textbox.configure(yscrollcommand=self.input_textbox_scrollbar.set)
+
+        # Send Button (No changes here)
         self.send_button = customtkinter.CTkButton(self, text="Send", command=self.on_submit)
         self.send_button.grid(row=3, column=3, padx=(0, 20), pady=(20, 20), sticky="nsew")
-        self.entry.bind('<Return>', self.on_submit)
+        self.input_textbox.bind('<Return>', self.on_submit)
 
 
 if __name__ == "__main__":
