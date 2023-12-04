@@ -26,6 +26,8 @@ from nltk.corpus import wordnet as wn
 import nltk
 import json
 from os import path
+import weaviate
+
 
 
 bundle_dir = path.abspath(path.dirname(__file__))
@@ -243,11 +245,11 @@ class App(customtkinter.CTk):
         
     async def retrieve_past_interactions(self, user_input, result_queue):
         try:
-            # Extract keywords (verbs and nouns) from the user input
-            keywords = extract_verbs_and_nouns(user_input)
-            concepts_query = ' '.join(keywords)  # Combine extracted words for the query
 
-            # Function to fetch relevant interaction history
+            keywords = extract_verbs_and_nouns(user_input)
+            concepts_query = ' '.join(keywords)
+
+
             def fetch_relevant_info(concepts_query, weaviate_client):
                 if weaviate_client and concepts_query:
                     query = f"""
@@ -392,11 +394,11 @@ class App(customtkinter.CTk):
 
     async def retrieve_past_interactions(self, user_input, result_queue):
         try:
-            # Extract keywords (verbs and nouns) from the user input
+
             keywords = extract_verbs_and_nouns(user_input)
             concepts_query = ' '.join(keywords)
 
-            # Fetch relevant interaction history
+
             query = f"""
             {{
                 Get {{
@@ -439,7 +441,7 @@ class App(customtkinter.CTk):
                 past_context = ""
 
             complete_prompt = f"{past_context}\nUser: {user_input}"
-            response = llama_generate(complete_prompt, self.client)  # Ensure this call is correct for your Llama model
+            response = llama_generate(complete_prompt, self.client)
             if response:
                 response_text = response
                 self.response_queue.put({'type': 'text', 'data': response_text})
@@ -490,7 +492,7 @@ class App(customtkinter.CTk):
             self.input_textbox.config(height=1)
             self.text_box.see(tk.END)
             self.executor.submit(self.generate_response, user_input)
-            self.executor.submit(self.generate_images, user_input)  # Image generation
+            self.executor.submit(self.generate_images, user_input)
             self.after(100, self.process_queue)
         return "break"
 
