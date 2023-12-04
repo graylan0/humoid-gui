@@ -1,0 +1,518 @@
+import tkinter as tk  # Color: #4169E1 - Importing the tkinter library for GUI creation.
+import threading  # Color: #4682B4 - Importing the threading module for concurrent execution.
+import os  # Color: #6A5ACD - Importing the os module for interacting with the operating system.
+import aiosqlite  # Color: #7B68EE - Importing aiosqlite for asynchronous database operations.
+import logging  # Color: #8A2BE2 - Importing logging for logging events and errors.
+import numpy as np  # Color: #9932CC - Importing numpy for numerical operations, aliased as np.
+import base64  # Color: #BA55D3 - Importing base64 for encoding/decoding binary data.
+import queue  # Color: #D8BFD8 - Importing queue for queue-based data structure.
+import uuid  # Color: #DDA0DD - Importing uuid for generating unique identifiers.
+import customtkinter  # Color: #EE82EE - Importing customtkinter for enhanced tkinter GUI elements.
+import requests  # Color: #FF00FF - Importing requests for making HTTP requests.
+from customtkinter import CTkImage  # Color: #DA70D6 - Importing CTkImage from customtkinter for image handling.
+import io  # Color: #C71585 - Importing io for core input/output operations.
+import sys  # Color: #DB7093 - Importing sys for system-specific parameters and functions.
+import random  # Color: #FF1493 - Importing random for generating random numbers.
+import asyncio  # Color: #FF69B4 - Importing asyncio for asynchronous I/O, event loop, coroutines and tasks.
+import weaviate  # Color: #FFB6C1 - Importing weaviate for interacting with Weaviate databases.
+from concurrent.futures import ThreadPoolExecutor  # Color: #FFC0CB - Importing ThreadPoolExecutor for pool of threads to execute calls asynchronously.
+from summa import summarizer  # Color: #FFA07A - Importing summarizer from summa for text summarization.
+from textblob import TextBlob  # Color: #FA8072 - Importing TextBlob for processing textual data.
+from weaviate.util import generate_uuid5  # Color: #E9967A - Importing generate_uuid5 from weaviate.util for UUID generation.
+from PIL import Image, ImageTk  # Color: #F08080 - Importing Image and ImageTk from PIL for image processing.
+from llama_cpp import Llama  # Color: #CD5C5C - Importing Llama from llama_cpp for Llama model operations.
+from nltk import pos_tag, word_tokenize  # Color: #B22222 - Importing pos_tag and word_tokenize from nltk for natural language processing.
+from nltk.corpus import wordnet as wn  # Color: #A52A2A - Importing wordnet from nltk.corpus for lexical database operations.
+import nltk  # Color: #800000 - Importing nltk for natural language toolkit operations.
+import json  # Color: #A0522D - Importing json for JSON encoding and decoding.
+from os import path  # Color: #8B4513 - Importing path from os for filesystem path operations.
+bundle_dir = path.abspath(path.dirname(__file__))  # Color: #2E8B57 - Setting the base directory of the script.
+path_to_config = path.join(bundle_dir, 'config.json')  # Color: #3CB371 - Defining the path to the configuration file.
+model_path = path.join(bundle_dir, 'llama-2-7b-chat.ggmlv3.q8_0.bin')  # Color: #66CDAA - Defining the path to the Llama model file.
+logo_path = path.join(bundle_dir, 'logo.png')  # Color: #20B2AA - Defining the path to the logo image file.
+
+def download_nltk_data():  # Color: #40E0D0 - Defining a function to download necessary NLTK data.
+    try:
+        resources = {  # Color: #48D1CC - Defining the NLTK resources to download.
+            'tokenizers/punkt': 'punkt',
+            'taggers/averaged_perceptron_tagger': 'averaged_perceptron_tagger'
+        }
+
+        for path, package in resources.items():  # Color: #00CED1 - Iterating over the defined resources.
+            try:
+                nltk.data.find(path)  # Color: #5F9EA0 - Checking if the resource is already downloaded.
+                print(f"'{package}' already downloaded.")  # Color: #4682B4 - Printing a message if already downloaded.
+            except LookupError:
+                nltk.download(package)  # Color: #B0C4DE - Downloading the resource if not found.
+                print(f"'{package}' downloaded successfully.")  # Color: #ADD8E6 - Printing a success message.
+
+    except Exception as e:
+        print(f"Error downloading NLTK data: {e}")  # Color: #B0E0E6 - Printing an error message if download fails.
+
+def load_config(file_path=path_to_config):  # Color: #AFEEEE - Defining a function to load the configuration file.
+    with open(file_path, 'r') as file:  # Color: #E0FFFF - Opening the configuration file.
+        return json.load(file)  # Color: #00FFFF - Loading and returning the JSON data.
+
+q = queue.Queue()  # Color: #7FFFD4 - Initializing a queue for handling asynchronous tasks.
+logger = logging.getLogger(__name__)  # Color: #66CDAA - Setting up a logger for the script.
+config = load_config()  # Color: #8FBC8F - Loading configuration settings from the file.
+DB_NAME = config['DB_NAME']  # Color: #20B2AA - Extracting the database name from the configuration.
+WEAVIATE_ENDPOINT = config['WEAVIATE_ENDPOINT']  # Color: #3CB371 - Extracting the Weaviate endpoint from the configuration.
+WEAVIATE_QUERY_PATH = config['WEAVIATE_QUERY_PATH']  # Color: #2E8B57 - Extracting the Weaviate query path from the configuration.
+client = weaviate.Client(url=WEAVIATE_ENDPOINT)  # Color: #008B8B - Initializing a Weaviate client with the endpoint.
+weaviate_client = weaviate.Client(url=WEAVIATE_ENDPOINT)  # Color: #008080 - Initializing another Weaviate client instance.
+async def init_db():  # Color: #556B2F - Defining an asynchronous function to initialize the database.
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:  # Color: #6B8E23 - Asynchronously connecting to the SQLite database.
+            await db.execute("""  # Color: #7CFC00 - Executing a SQL command to create a 'responses' table.
+                CREATE TABLE IF NOT EXISTS responses (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trideque_point INT,
+                    response TEXT,
+                    response_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    user_id INT
+                )
+            """)
+
+            await db.execute("""  # Color: #7FFF00 - Executing a SQL command to create a 'context' table.
+                CREATE TABLE IF NOT EXISTS context (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trideque_point INT,
+                    summarization_context TEXT,
+                    full_text TEXT
+                )
+            """)
+
+            await db.execute("""  # Color: #00FF00 - Executing a SQL command to create a 'users' table.
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT,
+                    relationship_state TEXT
+                )
+            """)
+
+            await db.commit()  # Color: #32CD32 - Committing the changes to the database.
+    except Exception as e:
+        logger.error(f"Error initializing database: {e}")  # Color: #228B22 - Logging an error if database initialization fails.
+
+llm = Llama(  # Color: #008000 - Initializing a Llama model instance.
+    model_path=model_path,  # Color: #006400 - Setting the model path for the Llama model.
+    n_gpu_layers=-1,  # Color: #2E8B57 - Setting the number of GPU layers for the Llama model.
+    n_ctx=3900,  # Color: #3CB371 - Setting the context size for the Llama model.
+)
+def llama_generate(prompt, weaviate_client=None):  # Color: #8B0000 - Defining a function to generate responses using Llama.
+    config = load_config()  # Color: #A52A2A - Loading configuration settings.
+    max_tokens = config.get('MAX_TOKENS', 3999)  # Color: #B22222 - Setting the maximum number of tokens for generation.
+    chunk_size = config.get('CHUNK_SIZE', 1250)  # Color: #DC143C - Setting the chunk size for text processing.
+
+    try:
+        def find_max_overlap(chunk, next_chunk):  # Color: #FF0000 - Defining a function to find the maximum overlap between chunks.
+            max_overlap = min(len(chunk), 400)  # Color: #FF6347 - Determining the maximum overlap length.
+            for overlap in range(max_overlap, 0, -1):  # Color: #FF7F50 - Iterating to find the overlap.
+                if chunk.endswith(next_chunk[:overlap]):  # Color: #FF4500 - Checking if the chunk ends with the next chunk's overlap.
+                    return overlap  # Color: #FF8C00 - Returning the overlap length.
+            return 0  # Color: #FFA07A - Returning zero if no overlap is found.
+
+        def determine_token(chunk):  # Color: #FFD700 - Defining a function to determine the token type.
+            words = word_tokenize(chunk)  # Color: #FFFF00 - Tokenizing the chunk.
+            tagged_words = pos_tag(words)  # Color: #FFFFE0 - Part-of-speech tagging the tokens.
+            verbs = [word for word, tag in tagged_words if tag.startswith('VB')]  # Color: #FFFACD - Extracting verbs.
+
+            if verbs:  # Color: #FAFAD2 - Checking if there are verbs in the chunk.
+                return "[action]"  # Color: #FFEFD5 - Returning 'action' token.
+            else:
+                return "[attention]"  # Color: #FFE4B5 - Returning 'attention' token.
+
+        def fetch_relevant_info(chunk, weaviate_client):  # Color: #FFDAB9 - Defining a function to fetch relevant information.
+            def truncate_text(text, max_words=25):  # Color: #EEE8AA - Defining a function to truncate text.
+                words = text.split()  # Color: #F0E68C - Splitting the text into words.
+                return ' '.join(words[:max_words])  # Color: #BDB76B - Joining the first 'max_words' words.
+
+            if weaviate_client:  # Color: #DEB887 - Checking if Weaviate client is provided.
+                query = f"""  # Color: #D2B48C - Formulating a query for Weaviate.
+                {{
+                    Get {{
+                        InteractionHistory(nearText: {{
+                            concepts: ["{chunk}"],
+                            certainty: 0.7
+                        }}) {{
+                            user_message
+                            ai_response
+                            .with_limit(1)
+                        }}
+                    }}
+                }}
+                """
+                response = weaviate_client.query.raw(query)  # Color: #BC8F8F - Executing the query.
+
+                if 'data' in response and 'Get' in response['data'] and 'InteractionHistory' in response['data']['Get']:  # Color: #A0522D - Checking if the response contains data.
+                    interaction = response['data']['Get']['InteractionHistory'][0]  # Color: #8B4513 - Extracting the first interaction.
+                    user_message = truncate_text(interaction['user_message'])  # Color: #D2691E - Truncating the user message.
+                    ai_response = truncate_text(interaction['ai_response'])  # Color: #CD853F - Truncating the AI response.
+                    return f"{user_message} {ai_response}"  # Color: #F4A460 - Returning the combined message.
+                else:
+                    return ""  # Color: #DEB887 - Returning an empty string if no data is found.
+            return ""
+
+        def tokenize_and_generate(chunk, token):  # Color: #DAA520 - Defining a function to tokenize and generate text.
+            inputs = llm(f"[{token}] {chunk}", max_tokens=min(max_tokens, chunk_size))  # Color: #B8860B - Generating text using Llama.
+
+            if not isinstance(inputs, dict):  # Color: #D2691E - Checking if the output is a dictionary.
+                logger.error(f"Output from Llama is not a dictionary: {type(inputs)}")  # Color: #A52A2A - Logging an error.
+                return None
+
+            choices = inputs.get('choices', [])  # Color: #8B0000 - Getting the choices from the output.
+            if not choices or not isinstance(choices[0], dict):  # Color: #800000 - Checking if choices are valid.
+                logger.error(f"No valid choices in Llama output")  # Color: #A52A2A - Logging an error.
+                return None
+
+            output = choices[0].get('text', '')  # Color: #B22222 - Getting the text from the first choice.
+            if not output:  # Color: #DC143C - Checking if there is any text output.
+                logger.error(f"No text found in Llama output")  # Color: #FF0000 - Logging an error.
+                return None
+
+            return output  # Color: #FF4500 - Returning the generated text.
+
+        prompt_chunks = [prompt[i:i + chunk_size] for i in range(0, len(prompt), chunk_size)]  # Color: #FF6347 - Splitting the prompt into chunks.
+        responses = []  # Color: #FF7F50 - Initializing a list to store responses.
+        last_output = ""  # Color: #FF8C00 - Initializing a variable for the last output.
+
+        for i, chunk in enumerate(prompt_chunks):  # Color: #FFA07A - Iterating over each chunk.
+            relevant_info = fetch_relevant_info(chunk, weaviate_client)  # Color: #FFD700 - Fetching relevant information.
+            combined_chunk = f"{relevant_info} {chunk}"  # Color: #FFFF00 - Combining the relevant info with the chunk.
+
+            token = determine_token(combined_chunk)  # Color: #FFFFE0 - Determining the token for the chunk.
+            output = tokenize_and_generate(combined_chunk, token)  # Color: #FFFACD - Generating text for the combined chunk.
+
+            if i > 0 and last_output:  # Color: #FAFAD2 - Checking if there is a previous output.
+                overlap = find_max_overlap(last_output, output)  # Color: #FFEFD5 - Finding the overlap with the last output.
+                output = output[overlap:]  # Color: #FFE4B5 - Trimming the overlapped part.
+
+            responses.append(output)  # Color: #FFDAB9 - Appending the response.
+            last_output = output  # Color: #EEE8AA - Updating the last output.
+
+        final_response = ''.join(responses)  # Color: #F0E68C - Combining all responses into the final response.
+        return final_response  # Color: #BDB76B - Returning the final response.
+    except Exception as e:
+        logger.error(f"Error in llama_generate: {e}")  # Color: #DEB887 - Logging an error if generation fails.
+        return None
+
+def run_async_in_thread(loop, coro_func, *args):  # Color: #D2B48C - Defining a function to run async tasks in a thread.
+    try:
+        asyncio.set_event_loop(loop)  # Color: #BC8F8F - Setting the event loop for asyncio.
+        coro = coro_func(*args)  # Color: #A0522D - Creating a coroutine from the given function and arguments.
+        loop.run_until_complete(coro)  # Color: #8B4513 - Running the coroutine until completion.
+    except Exception as e:
+        logger.error(f"Error in async thread: {e}")  # Color: #D2691E - Logging an error if the async operation fails.
+    finally:
+        loop.close()  # Color: #CD853F - Closing the event loop.
+
+def truncate_text(self, text, max_length=35):  # Color: #F4A460 - Defining a function to truncate text.
+    return text if len(text) <= max_length else text[:max_length] + '...'  # Color: #DAA520 - Returning truncated text or the original text.
+class App(customtkinter.CTk):  # Color: #8B008B - Defining the main application class inheriting from customtkinter.CTk.
+    def __init__(self):  # Color: #9932CC - Constructor method for initializing the App class.
+        super().__init__()  # Color: #9400D3 - Calling the constructor of the parent class.
+        self.setup_gui()  # Color: #8A2BE2 - Calling the method to set up the GUI.
+        self.response_queue = queue.Queue()  # Color: #9370DB - Initializing a queue for managing responses.
+        self.client = weaviate.Client(url=WEAVIATE_ENDPOINT)  # Color: #BA55D3 - Creating a Weaviate client instance.
+        self.executor = ThreadPoolExecutor(max_workers=4)  # Color: #DA70D6 - Initializing a ThreadPoolExecutor for asynchronous tasks.
+        
+    async def retrieve_past_interactions(self, generated_reply, result_queue):  # Color: #FF00FF - Defining an asynchronous method to retrieve past interactions.
+        try:
+            def sync_query():  # Color: #FF00FF - Defining a nested function for synchronous querying.
+                query = f"""  # Color: #DDA0DD - Formulating a GraphQL query for Weaviate.
+                {{
+                    Get {{
+                        InteractionHistory(nearText: {{
+                            concepts: ["{generated_reply}"],
+                            certainty: 0.7
+                            .with_limit(111)
+                        }}) {{
+                            user_message
+                            ai_response
+                        }}
+                    }}
+                }}
+                """
+                return self.client.query.raw(query)  # Color: #EE82EE - Executing the query and returning the response.
+
+            def truncate_text(text, max_length=35):  # Color: #DA70D6 - Defining a function to truncate text.
+                return text if len(text) <= max_length else text[:max_length] + '...'  # Color: #FF00FF - Returning truncated text.
+
+            with ThreadPoolExecutor() as executor:  # Color: #D8BFD8 - Using ThreadPoolExecutor for running the query.
+                response = await asyncio.get_event_loop().run_in_executor(executor, sync_query)  # Color: #DDA0DD - Running the synchronous query in an asynchronous manner.
+
+            if 'data' in response and 'Get' in response['data'] and 'InteractionHistory' in response['data']['Get']:  # Color: #EE82EE - Checking if the response contains interaction data.
+                interactions = response['data']['Get']['InteractionHistory']  # Color: #FF00FF - Extracting interaction history.
+
+                processed_interactions = []  # Color: #DA70D6 - Initializing a list for processed interactions.
+                for interaction in interactions:  # Color: #FF00FF - Iterating through each interaction.
+                    truncated_user_message = truncate_text(interaction['user_message'], 100)  # Color: #DDA0DD - Truncating the user message.
+                    truncated_ai_response = truncate_text(interaction['ai_response'], 100)  # Color: #EE82EE - Truncating the AI response.
+                    summarized_interaction = summarizer.summarize(f"{truncated_user_message} {truncated_ai_response}")  # Color: #DA70D6 - Summarizing the interaction.
+                    sentiment = TextBlob(summarized_interaction).sentiment.polarity  # Color: #FF00FF - Analyzing the sentiment of the summarized interaction.
+                    processed_interactions.append({  # Color: #D8BFD8 - Appending the processed interaction to the list.
+                        "user_message": truncated_user_message,
+                        "ai_response": truncated_ai_response,
+                        "summarized_interaction": summarized_interaction,
+                        "sentiment": sentiment
+                    })
+
+                result_queue.put(processed_interactions)  # Color: #DDA0DD - Putting the processed interactions into the result queue.
+            else:
+                logger.error("No interactions found for the given generated reply.")  # Color: #EE82EE - Logging an error if no interactions are found.
+                result_queue.put([])  # Color: #DA70D6 - Putting an empty list into the result queue.
+        except Exception as e:
+            logger.error(f"An error occurred while retrieving interactions: {e}")  # Color: #FF00FF - Logging any exceptions that occur.
+            result_queue.put([])  # Color: #D8BFD8 - Putting an empty list into the result queue in case of an exception.
+def process_response_and_store_in_weaviate(self, user_message, ai_response):  # Color: #483D8B - Defining a method to process responses and store them in Weaviate.
+    response_blob = TextBlob(ai_response)  # Color: #6A5ACD - Creating a TextBlob object for sentiment analysis.
+    keywords = response_blob.noun_phrases  # Color: #7B68EE - Extracting noun phrases as keywords from the response.
+    sentiment = response_blob.sentiment.polarity  # Color: #9370DB - Calculating the sentiment polarity of the response.
+
+    interaction_object = {  # Color: #8A2BE2 - Creating a dictionary to represent the interaction.
+        "userMessage": user_message,  # Color: #9400D3 - Storing the user message.
+        "aiResponse": ai_response,  # Color: #9932CC - Storing the AI response.
+        "keywords": list(keywords),  # Color: #BA55D3 - Storing the extracted keywords.
+        "sentiment": sentiment  # Color: #DA70D6 - Storing the sentiment polarity.
+    }
+
+    interaction_uuid = str(uuid.uuid4())  # Color: #FF00FF - Generating a unique UUID for the interaction.
+
+    try:
+        self.client.data_object.create(  # Color: #DDA0DD - Creating a data object in Weaviate.
+            data_object=interaction_object,  # Color: #EE82EE - Specifying the interaction object.
+            class_name="InteractionHistory",  # Color: #FF00FF - Specifying the class name for the object.
+            uuid=interaction_uuid  # Color: #DA70D6 - Specifying the UUID for the object.
+        )
+        print(f"Interaction stored in Weaviate with UUID: {interaction_uuid}")  # Color: #FF00FF - Printing a confirmation message.
+    except Exception as e:
+        print(f"Error storing interaction in Weaviate: {e}")  # Color: #DDA0DD - Printing an error message if storage fails.
+
+def __exit__(self, exc_type, exc_value, traceback):  # Color: #EE82EE - Defining an exit method for the class.
+    self.executor.shutdown(wait=True)  # Color: #FF00FF - Shutting down the executor on exit.
+
+def create_interaction_history_object(self, user_message, ai_response):  # Color: #DA70D6 - Defining a method to create an interaction history object.
+    interaction_object = {  # Color: #FF00FF - Creating a dictionary to represent the interaction.
+        "user_message": user_message,  # Color: #DDA0DD - Storing the user message.
+        "ai_response": ai_response  # Color: #EE82EE - Storing the AI response.
+    }
+
+    try:
+        object_uuid = uuid.uuid4()  # Color: #DA70D6 - Generating a unique UUID for the interaction object.
+        self.client.data_object.create(  # Color: #FF00FF - Creating a data object in Weaviate.
+            data_object=interaction_object,  # Color: #DDA0DD - Specifying the interaction object.
+            class_name="InteractionHistory",  # Color: #EE82EE - Specifying the class name for the object.
+            uuid=object_uuid  # Color: #DA70D6 - Specifying the UUID for the object.
+        )
+        print(f"Interaction history object created with UUID: {object_uuid}")  # Color: #FF00FF - Printing a confirmation message.
+    except Exception as e:
+        print(f"Error creating interaction history object in Weaviate: {e}")  # Color: #DDA0DD - Printing an error message if creation fails.
+def map_keywords_to_weaviate_classes(self, keywords, context):  # Color: #556B2F - Defining a method to map keywords to Weaviate classes.
+    try:
+        summarized_context = summarizer.summarize(context)  # Color: #6B8E23 - Summarizing the context using the summarizer.
+    except Exception as e:
+        print(f"Error in summarizing context: {e}")  # Color: #7CFC00 - Printing an error if summarization fails.
+        summarized_context = context  # Color: #7FFF00 - Defaulting to original context in case of an error.
+
+    try:
+        sentiment = TextBlob(summarized_context).sentiment  # Color: #00FF00 - Analyzing sentiment of the summarized context.
+    except Exception as e:
+        print(f"Error in sentiment analysis: {e}")  # Color: #32CD32 - Printing an error if sentiment analysis fails.
+        sentiment = TextBlob("").sentiment  # Color: #228B22 - Defaulting to neutral sentiment in case of an error.
+
+    positive_class_mappings = {  # Color: #008000 - Defining mappings for positive sentiment keywords.
+        "keyword1": "PositiveClassA",
+        "keyword2": "PositiveClassB",
+    }
+
+    negative_class_mappings = {  # Color: #006400 - Defining mappings for negative sentiment keywords.
+        "keyword1": "NegativeClassA",
+        "keyword2": "NegativeClassB",
+    }
+
+    default_mapping = {  # Color: #2E8B57 - Defining default mappings for neutral keywords.
+        "keyword1": "NeutralClassA",
+        "keyword2": "NeutralClassB",
+    }
+
+    if sentiment.polarity > 0:  # Color: #3CB371 - Checking if sentiment is positive.
+        mapping = positive_class_mappings  # Color: #20B2AA - Using positive mappings.
+    elif sentiment.polarity < 0:  # Color: #66CDAA - Checking if sentiment is negative.
+        mapping = negative_class_mappings  # Color: #8FBC8F - Using negative mappings.
+    else:
+        mapping = default_mapping  # Color: #008B8B - Using default mappings for neutral sentiment.
+
+    mapped_classes = {}  # Color: #008080 - Initializing a dictionary for mapped classes.
+    for keyword in keywords:  # Color: #7FFFD4 - Iterating over each keyword.
+        try:
+            if keyword in mapping:  # Color: #66CDAA - Checking if the keyword is in the mapping.
+                mapped_classes[keyword] = mapping[keyword]  # Color: #20B2AA - Mapping the keyword to its class.
+        except KeyError as e:
+            print(f"Error in mapping keyword '{keyword}': {e}")  # Color: #3CB371 - Printing an error if mapping fails.
+
+    return mapped_classes  # Color: #2E8B57 - Returning the mapped classes.
+
+def run_async_in_thread(loop, coro_func, message, result_queue):  # Color: #556B2F - Defining a function to run asynchronous tasks in a thread.
+    asyncio.set_event_loop(loop)  # Color: #6B8E23 - Setting the asyncio event loop.
+    coro = coro_func(message, result_queue)  # Color: #7CFC00 - Creating a coroutine with the provided function and arguments.
+    loop.run_until_complete(coro)  # Color: #7FFF00 - Running the coroutine until completion.
+def generate_response(self, message):  # Color: #8B4513 - Defining a method to generate a response based on a message.
+    try:
+        result_queue = queue.Queue()  # Color: #A0522D - Initializing a queue to hold results.
+        loop = asyncio.new_event_loop()  # Color: #D2691E - Creating a new asyncio event loop.
+        past_interactions_thread = threading.Thread(target=run_async_in_thread, args=(loop, self.retrieve_past_interactions, message, result_queue))  # Color: #CD853F - Starting a thread to retrieve past interactions.
+        past_interactions_thread.start()  # Color: #F4A460 - Starting the thread.
+        past_interactions_thread.join()  # Color: #DEB887 - Waiting for the thread to complete.
+        past_interactions = result_queue.get()  # Color: #D2B48C - Retrieving the past interactions from the queue.
+        past_context = "\n".join([f"User: {interaction['user_message']}\nAI: {interaction['ai_response']}" for interaction in past_interactions])  # Color: #BC8F8F - Forming the past context from interactions.
+        complete_prompt = f"{past_context}\nUser: {message}"  # Color: #A52A2A - Creating the complete prompt for the response generation.
+        response = llama_generate(complete_prompt)  # Color: #8B0000 - Generating a response using the Llama model.
+        if response:
+            response_text = response  # Color: #800000 - Storing the generated response.
+            self.response_queue.put({'type': 'text', 'data': response_text})  # Color: #B22222 - Adding the response to the response queue.
+            keywords = self.extract_keywords(message)  # Color: #FF0000 - Extracting keywords from the message.
+            mapped_classes = self.map_keywords_to_weaviate_classes(keywords, message)  # Color: #FF4500 - Mapping keywords to Weaviate classes.
+            self.create_interaction_history_object(message, response_text)  # Color: #FF6347 - Creating an interaction history object.
+        else:
+            logger.error("No response generated by llama_generate")  # Color: #FF7F50 - Logging an error if no response is generated.
+
+    except Exception as e:
+        logger.error(f"Error in generate_response: {e}")  # Color: #FF8C00 - Logging any exceptions that occur during response generation.
+
+def on_submit(self, event=None):  # Color: #FFA07A - Defining the method to handle the submit event.
+    download_nltk_data()  # Color: #FFD700 - Downloading necessary NLTK data.
+    message = self.input_textbox.get("1.0", tk.END).strip()  # Color: #FFFF00 - Retrieving the message from the input textbox.
+    if message:
+        self.text_box.insert(tk.END, f"You: {message}\n")  # Color: #FFFFE0 - Inserting the user message into the text box.
+        self.input_textbox.delete("1.0", tk.END)  # Color: #FFFACD - Clearing the input textbox.
+        self.input_textbox.config(height=1)  # Color: #FAFAD2 - Configuring the height of the input textbox.
+        self.text_box.see(tk.END)  # Color: #FFEFD5 - Scrolling the text box to the end.
+        self.executor.submit(self.generate_response, message)  # Color: #FFE4B5 - Submitting the message for response generation.
+        self.executor.submit(self.generate_images, message)  # Color: #FFDAB9 - Submitting the message for image generation.
+        self.after(100, self.process_queue)  # Color: #EEE8AA - Scheduling the process queue method.
+    return "break"  # Color: #F0E68C - Returning 'break' to stop further processing.
+
+def create_object(self, class_name, object_data):  # Color: #BDB76B - Defining a method to create an object in Weaviate.
+    unique_string = f"{object_data['time']}-{object_data['user_message']}-{object_data['ai_response']}"  # Color: #DEB887 - Creating a unique string for the object.
+    object_uuid = uuid.uuid5(uuid.NAMESPACE_URL, unique_string).hex  # Color: #F4A460 - Generating a UUID based on the unique string.
+
+    try:
+        self.client.data_object.create(object_data, object_uuid, class_name)  # Color: #CD853F - Creating the object in Weaviate.
+        print(f"Object created with UUID: {object_uuid}")  # Color: #D2691E - Printing a confirmation message.
+    except Exception as e:
+        print(f"Error creating object in Weaviate: {e}")  # Color: #A0522D - Printing an error message if object creation fails.
+
+    return object_uuid  # Color: #8B4513 - Returning the UUID of the created object.
+
+def process_queue(self):  # Color: #556B2F - Defining a method to process the response queue.
+    try:
+        while True:
+            response = self.response_queue.get_nowait()  # Color: #6B8E23 - Getting the next response from the queue without waiting.
+            if response['type'] == 'text':
+                self.text_box.insert(tk.END, f"AI: {response['data']}\n")  # Color: #7CFC00 - Inserting the AI response into the text box.
+            elif response['type'] == 'image':
+                self.image_label.configure(image=response['data'])  # Color: #7FFF00 - Configuring the image label with the response image.
+                self.image_label.image = response['data']  # Color: #00FF00 - Storing the image in the label.
+            self.text_box.see(tk.END)  # Color: #32CD32 - Scrolling the text box to the end.
+    except queue.Empty:
+        self.after(100, self.process_queue)  # Color: #228B22 - Scheduling the next execution of process_queue.
+
+def extract_keywords(self, message):  # Color: #008000 - Defining a method to extract keywords from a message.
+    try:
+        blob = TextBlob(message)  # Color: #006400 - Creating a TextBlob object for the message.
+        nouns = blob.noun_phrases  # Color: #2E8B57 - Extracting noun phrases as keywords.
+        return list(nouns)  # Color: #3CB371 - Returning the list of keywords.
+    except Exception as e:
+        print(f"Error in extract_keywords: {e}")  # Color: #20B2AA - Printing an error message if keyword extraction fails.
+        return []  # Color: #66CDAA - Returning an empty list in case of an error.
+def generate_images(self, message):  # Color: #8B0000 - Defining a method to generate images based on a message.
+    try:
+        url = config['IMAGE_GENERATION_URL']  # Color: #A52A2A - Retrieving the image generation URL from the configuration.
+        payload = {  # Color: #B22222 - Creating a payload for the image generation request.
+            "prompt": message,
+            "steps": 79,
+            "seed": random.randrange(sys.maxsize),
+            "enable_hr": "false",
+            "denoising_strength": "0.7",
+            "cfg_scale": "7",
+            "width": 326,
+            "height": 656,
+            "restore_faces": "true",
+        }
+        response = requests.post(url, json=payload)  # Color: #DC143C - Sending a POST request to the image generation service.
+        if response.status_code == 200:  # Color: #FF0000 - Checking if the response status is successful.
+            try:
+                r = response.json()  # Color: #FF4500 - Parsing the response as JSON.
+                for img_data in r['images']:  # Color: #FF6347 - Iterating over the images in the response.
+                    if ',' in img_data:
+                        base64_data = img_data.split(",", 1)[1]  # Color: #FF7F50 - Extracting the base64 part of the image data.
+                    else:
+                        base64_data = img_data
+                    image_data = base64.b64decode(base64_data)  # Color: #FF8C00 - Decoding the base64 image data.
+                    image = Image.open(io.BytesIO(image_data))  # Color: #FFA07A - Opening the image from the decoded data.
+                    img_tk = ImageTk.PhotoImage(image)  # Color: #FFD700 - Creating a PhotoImage object for Tkinter.
+                    self.response_queue.put({'type': 'image', 'data': img_tk})  # Color: #FFFF00 - Adding the image to the response queue.
+                    self.image_label.image = img_tk  # Color: #FFFFE0 - Setting the image for the image label.
+                    file_name = f"generated_image_{uuid.uuid4()}.png"  # Color: #FFFACD - Generating a file name for the image.
+                    image_path = os.path.join("saved_images", file_name)  # Color: #FAFAD2 - Creating a path for saving the image.
+                    if not os.path.exists("saved_images"):
+                        os.makedirs("saved_images")  # Color: #FFEFD5 - Creating the directory if it doesn't exist.
+                    image.save(image_path)  # Color: #FFE4B5 - Saving the image to the file system.
+
+            except ValueError as e:
+                print("Error processing image data: ", e)  # Color: #FFDAB9 - Printing an error if image processing fails.
+        else:
+            print("Error generating image: ", response.status_code)  # Color: #EEE8AA - Printing an error if the image generation request fails.
+
+    except Exception as e:
+        logger.error(f"Error in generate_images: {e}")  # Color: #F0E68C - Logging any exceptions that occur during image generation.
+
+def setup_gui(self):  # Color: #BDB76B - Defining a method to set up the graphical user interface.
+    self.title("OneLoveIPFS AI")  # Color: #DEB887 - Setting the title of the window.
+    window_width = 1200  # Color: #F4A460 - Defining the width of the window.
+    window_height = 900  # Color: #CD853F - Defining the height of the window.
+    screen_width = self.winfo_screenwidth()  # Color: #D2691E - Getting the width of the screen.
+    screen_height = self.winfo_screenheight()  # Color: #A0522D - Getting the height of the screen.
+    center_x = int(screen_width/2 - window_width/2)  # Color: #8B4513 - Calculating the center x-coordinate for the window.
+    center_y = int(screen_height/2 - window_height/2)  # Color: #556B2F - Calculating the center y-coordinate for the window.
+    self.geometry(f'{window_width}x{window_height}+{center_x}+{center_y}')  # Color: #6B8E23 - Setting the geometry of the window.
+    self.grid_columnconfigure(1, weight=1)  # Color: #7CFC00 - Configuring the grid layout for columns.
+    self.grid_columnconfigure((2, 3), weight=0)  # Color: #7FFF00 - Configuring the grid layout for additional columns.
+    self.grid_rowconfigure((0, 1, 2), weight=1)  # Color: #00FF00 - Configuring the grid layout for rows.
+    self.sidebar_frame = customtkinter.CTkFrame(self, width=440, corner_radius=0)  # Color: #32CD32 - Creating a frame for the sidebar.
+    self.sidebar_frame.grid(row=0, column=0, rowspan=4, sticky="nsew")  # Color: #228B22 - Placing the sidebar frame in the grid.
+    logo_img = Image.open(logo_path)  # Color: #008000 - Opening the logo image.
+    logo_photo = ImageTk.PhotoImage(logo_img)  # Color: #006400 - Creating a PhotoImage object for the logo.
+    self.logo_label = customtkinter.CTkLabel(self.sidebar_frame, image=logo_photo)  # Color: #2E8B57 - Creating a label for the logo.
+    self.logo_label.image = logo_photo  # Color: #3CB371 - Setting the image for the logo label.
+    self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))  # Color: #20B2AA - Placing the logo label in the grid.
+    self.image_label = customtkinter.CTkLabel(self.sidebar_frame)  # Color: #66CDAA - Creating a label for images.
+    self.image_label.grid(row=1, column=0, padx=20, pady=10)  # Color: #8FBC8F - Placing the image label in the grid.
+    placeholder_image = Image.new('RGB', (140, 140), color = (73, 109, 137))  # Color: #008B8B - Creating a placeholder image.
+    self.placeholder_photo = ImageTk.PhotoImage(placeholder_image)  # Color: #7FFFD4 - Creating a PhotoImage object for the placeholder.
+    self.image_label.configure(image=self.placeholder_photo)  # Color: #66CDAA - Setting the placeholder image for the image label.
+    self.image_label.image = self.placeholder_photo  # Color: #20B2AA - Storing the placeholder image in the label.
+    self.text_box = customtkinter.CTkTextbox(self, bg_color="white", text_color="white", border_width=0, height=260, width=50, font=customtkinter.CTkFont(size=18))  # Color: #3CB371 - Creating a textbox for displaying text.
+    self.text_box.grid(row=0, column=1, rowspan=3, columnspan=3, padx=(20, 20), pady=(20, 20), sticky="nsew")  # Color: #2E8B57 - Placing the textbox in the grid.
+    self.input_textbox_frame = customtkinter.CTkFrame(self)  # Color: #008000 - Creating a frame for the input textbox.
+    self.input_textbox_frame.grid(row=3, column=1, columnspan=2, padx=(20, 0), pady=(20, 20), sticky="nsew")  # Color: #006400 - Placing the input textbox frame in the grid.
+    self.input_textbox_frame.grid_columnconfigure(0, weight=1)  # Color: #228B22 - Configuring the grid layout for the input textbox frame.
+    self.input_textbox_frame.grid_rowconfigure(0, weight=1)  # Color: #32CD32 - Configuring the grid layout for the input textbox frame rows.
+    self.input_textbox = tk.Text(self.input_textbox_frame, font=("Roboto Medium", 10), bg=customtkinter.ThemeManager.theme["CTkFrame"]["fg_color"][1 if customtkinter.get_appearance_mode() == "Dark" else 0], fg=customtkinter.ThemeManager.theme["CTkLabel"]["text_color"][1 if customtkinter.get_appearance_mode() == "Dark" else 0], relief="flat", height=1)  # Color: #00FF00 - Creating a text widget for input.
+    self.input_textbox.grid(padx=20, pady=20, sticky="nsew")  # Color: #7FFF00 - Placing the input textbox in the grid.
+    self.input_textbox_scrollbar = customtkinter.CTkScrollbar(self.input_textbox_frame, command=self.input_textbox.yview)  # Color: #7CFC00 - Creating a scrollbar for the input textbox.
+    self.input_textbox_scrollbar.grid(row=0, column=1, sticky="ns", pady=5)  # Color: #6B8E23 - Placing the scrollbar in the grid.
+    self.input_textbox.configure(yscrollcommand=self.input_textbox_scrollbar.set)  # Color: #556B2F - Configuring the input textbox to use the scrollbar.
+    self.send_button = customtkinter.CTkButton(self, text="Send", command=self.on_submit)  # Color: #A0522D - Creating a send button.
+    self.send_button.grid(row=3, column=3, padx=(0, 20), pady=(20, 20), sticky="nsew")  # Color: #D2691E - Placing the send button in the grid.
+    self.input_textbox.bind('<Return>', self.on_submit)  # Color: #CD853F - Binding the return key to the on_submit method.
+
+if __name__ == "__main__":  # Color: #F4A460 - Checking if the script is the main module.
+    try:
+        app = App()  # Color: #DEB887 - Creating an instance of the App class.
+        loop = asyncio.get_event_loop()  # Color: #D2B48C - Getting the current asyncio event loop.
+        loop.run_until_complete(init_db())  # Color: #BC8F8F - Running the database initialization asynchronously.
+        app.mainloop()  # Color: #A52A2A - Starting the main loop of the application.
+    except Exception as e:
+        logger.error(f"Application error: {e}")  # Color: #8B0000 - Logging any exceptions that occur during application execution.
