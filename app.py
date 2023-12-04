@@ -4,7 +4,6 @@ import os
 import aiosqlite
 import logging
 import numpy as np
-from datetime import datetime
 import base64
 import queue
 import uuid
@@ -74,9 +73,6 @@ client = weaviate.Client(
     url=WEAVIATE_ENDPOINT,
 )
 weaviate_client = weaviate.Client(url=WEAVIATE_ENDPOINT)
-
-
-
 
 async def init_db():
     try:
@@ -235,35 +231,6 @@ def run_async_in_thread(loop, coro_func, *args):
 def truncate_text(self, text, max_length=35):
     return text if len(text) <= max_length else text[:max_length] + '...'  
 
-def save_image(image_data, folder_path='saved_images'):
-    try:
-        if not os.path.exists(folder_path):
-            os.makedirs(folder_path)
-        file_name = f"{uuid.uuid4()}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"
-        file_path = os.path.join(folder_path, file_name)
-        with open(file_path, 'wb') as file:
-            file.write(image_data)
-        return file_path
-    except Exception as e:
-        print(f"Failed to save image: {e}")
-        return None
-    
-def save_interaction_history_to_json(interaction, file_path='interaction_history.json'):
-    try:
-        interaction['timestamp'] = datetime.now().isoformat()
-        data = []
-        if os.path.isfile(file_path):
-            with open(file_path, 'r') as file:
-                try:
-                    data = json.load(file)
-                except json.JSONDecodeError:
-                    print("Error reading JSON file. Starting a new file.")
-
-        data.append(interaction)
-        with open(file_path, 'w') as file:
-            json.dump(data, file, indent=4)
-    except Exception as e:
-        print(f"Failed to save interaction history: {e}")
 
 class App(customtkinter.CTk):
     def __init__(self):
@@ -276,22 +243,24 @@ class App(customtkinter.CTk):
     async def retrieve_past_interactions(self, generated_reply, result_queue):
         try:
             def sync_query():
-                # Define the query as a string
-                query = f"""
-                {{
-                    Get {{
-                        InteractionHistory(nearText: {{
-                            concepts: ["{generated_reply}"],
-                            certainty: 0.7
-                            .with_limit(111)
-                        }}) {{
-                            user_message
-                            ai_response
+                query = {
+                    "query": f"""
+                    {{
+                        Get {{
+                            InteractionHistory(nearText: {{
+                                concepts: ["{generated_reply}"],
+                                certainty: 0.7
+                                .with_limit(111)
+                            }}) {{
+                                user_message
+                                ai_response
+                             
+                            }}
                         }}
                     }}
-                }}
-                """
-                # Pass the query string directly to the raw method
+                    """
+                }
+
                 return self.client.query.raw(query)
 
             def truncate_text(text, max_length=35):
@@ -447,11 +416,6 @@ class App(customtkinter.CTk):
                 response_text = response
                 self.response_queue.put({'type': 'text', 'data': response_text})
 
-                interaction = {
-                   "user_message": message,
-                   "ai_response": response_text       
-                }
-                save_interaction_history_to_json(interaction)
                 keywords = self.extract_keywords(message)
                 mapped_classes = self.map_keywords_to_weaviate_classes(keywords, message)
 
@@ -519,7 +483,6 @@ class App(customtkinter.CTk):
             return []
 
 
-        
     def generate_images(self, message):
         try:
             url = config['IMAGE_GENERATION_URL']
