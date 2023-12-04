@@ -243,24 +243,22 @@ class App(customtkinter.CTk):
     async def retrieve_past_interactions(self, generated_reply, result_queue):
         try:
             def sync_query():
-                query = {
-                    "query": f"""
-                    {{
-                        Get {{
-                            InteractionHistory(nearText: {{
-                                concepts: ["{generated_reply}"],
-                                certainty: 0.7
-                                .with_limit(111)
-                            }}) {{
-                                user_message
-                                ai_response
-                             
-                            }}
+                # Define the query as a string
+                query = f"""
+                {{
+                    Get {{
+                        InteractionHistory(nearText: {{
+                            concepts: ["{generated_reply}"],
+                            certainty: 0.7
+                            .with_limit(111)
+                        }}) {{
+                            user_message
+                            ai_response
                         }}
                     }}
-                    """
-                }
-
+                }}
+                """
+                # Pass the query string directly to the raw method
                 return self.client.query.raw(query)
 
             def truncate_text(text, max_length=35):
@@ -293,6 +291,7 @@ class App(customtkinter.CTk):
         except Exception as e:
             logger.error(f"An error occurred while retrieving interactions: {e}")
             result_queue.put([])
+
 
 
 
