@@ -215,19 +215,23 @@ def llama_generate(prompt, weaviate_client=None):
         return None
 
 
-def run_async_in_thread(loop, coro_func, *args):
+def run_async_in_thread(self, loop, coro_func, user_input, result_queue):
     try:
         asyncio.set_event_loop(loop)
-        coro = coro_func(*args)
+        coro = coro_func(user_input, result_queue)
         loop.run_until_complete(coro)
-    except Exception as e:
-        logger.error(f"Error in async thread: {e}")
     finally:
         loop.close()
+
 
 def truncate_text(self, text, max_length=35):
     return text if len(text) <= max_length else text[:max_length] + '...'  
 
+def extract_verbs_and_nouns(text):
+    words = word_tokenize(text)
+    tagged_words = pos_tag(words)
+    verbs_and_nouns = [word for word, tag in tagged_words if tag.startswith('VB') or tag.startswith('NN')]
+    return verbs_and_nouns
 
 class App(customtkinter.CTk):
     def __init__(self):
@@ -237,52 +241,51 @@ class App(customtkinter.CTk):
         self.client = weaviate.Client(url=WEAVIATE_ENDPOINT)
         self.executor = ThreadPoolExecutor(max_workers=4)
         
-    async def retrieve_past_interactions(self, generated_reply, result_queue):
+    async def retrieve_past_interactions(self, user_input, result_queue):
         try:
-            def sync_query():
+            # Extract keywords (verbs and nouns) from the user input
+            keywords = extract_verbs_and_nouns(user_input)
+            concepts_query = ' '.join(keywords)  # Combine extracted words for the query
 
-                query = f"""
-                {{
-                    Get {{
-                        InteractionHistory(nearText: {{
-                            concepts: ["{generated_reply}"],
-                            certainty: 0.7
-                            .with_limit(111)
-                        }}) {{
-                            user_message
-                            ai_response
+            # Function to fetch relevant interaction history
+            def fetch_relevant_info(concepts_query, weaviate_client):
+                if weaviate_client and concepts_query:
+                    query = f"""
+                    {{
+                        Get {{
+                            InteractionHistory(nearText: {{
+                                concepts: ["{concepts_query}"],
+                                certainty: 0.7
+                            }}) {{
+                                user_message
+                                ai_response
+                                .with_limit(1)
+                            }}
                         }}
                     }}
-                }}
-                """
+                    """
+                    response = weaviate_client.query.raw(query)
+                    if 'data' in response and 'Get' in response['data'] and 'InteractionHistory' in response['data']['Get']:
+                        interaction = response['data']['Get']['InteractionHistory'][0]
+                        return interaction['user_message'], interaction['ai_response']
+                    else:
+                        return "", ""
+                return "", ""
 
-                return self.client.query.raw(query)
+            user_message, ai_response = fetch_relevant_info(concepts_query, self.client)
 
-            def truncate_text(text, max_length=35):
-                return text if len(text) <= max_length else text[:max_length] + '...'
-
-            with ThreadPoolExecutor() as executor:
-                response = await asyncio.get_event_loop().run_in_executor(executor, sync_query)
-
-            if 'data' in response and 'Get' in response['data'] and 'InteractionHistory' in response['data']['Get']:
-                interactions = response['data']['Get']['InteractionHistory']
-
-                processed_interactions = []
-                for interaction in interactions:
-                    truncated_user_message = truncate_text(interaction['user_message'], 100)
-                    truncated_ai_response = truncate_text(interaction['ai_response'], 100)
-                    summarized_interaction = summarizer.summarize(f"{truncated_user_message} {truncated_ai_response}")
-                    sentiment = TextBlob(summarized_interaction).sentiment.polarity
-                    processed_interactions.append({
-                        "user_message": truncated_user_message,
-                        "ai_response": truncated_ai_response,
-                        "summarized_interaction": summarized_interaction,
-                        "sentiment": sentiment
-                    })
-
-                result_queue.put(processed_interactions)
+            if user_message and ai_response:
+                summarized_interaction = summarizer.summarize(f"{user_message} {ai_response}")
+                sentiment = TextBlob(summarized_interaction).sentiment.polarity
+                processed_interaction = {
+                    "user_message": user_message,
+                    "ai_response": ai_response,
+                    "summarized_interaction": summarized_interaction,
+                    "sentiment": sentiment
+                }
+                result_queue.put([processed_interaction])
             else:
-                logger.error("No interactions found for the given generated reply.")
+                logger.error("No relevant interactions found for the given user input.")
                 result_queue.put([])
         except Exception as e:
             logger.error(f"An error occurred while retrieving interactions: {e}")
@@ -387,47 +390,110 @@ class App(customtkinter.CTk):
         return mapped_classes
 
 
-    def run_async_in_thread(loop, coro_func, message, result_queue):
-        asyncio.set_event_loop(loop)
-        coro = coro_func(message, result_queue)
-        loop.run_until_complete(coro)
+    async def retrieve_past_interactions(self, user_input, result_queue):
+        try:
+            # Extract keywords (verbs and nouns) from the user input
+            keywords = extract_verbs_and_nouns(user_input)
+            concepts_query = ' '.join(keywords)
 
-    def generate_response(self, message):
+            # Fetch relevant interaction history
+            query = f"""
+            {{
+                Get {{
+                    InteractionHistory(nearText: {{
+                        concepts: ["{concepts_query}"],
+                        certainty: 0.7
+                    }}) {{
+                        user_message
+                        ai_response
+                        .with_limit(5)  # Adjust the limit as needed
+                    }}
+                }}
+            }}
+            """
+            response = await self.client.query.raw(query)
+            if 'data' in response and 'Get' in response['data'] and 'InteractionHistory' in response['data']['Get']:
+                interactions = response['data']['Get']['InteractionHistory']
+                result_queue.put(interactions)
+            else:
+                result_queue.put([])
+        except Exception as e:
+            logger.error(f"An error occurred while retrieving interactions: {e}")
+            result_queue.put([])
+
+    def generate_response(self, user_input):
         try:
             result_queue = queue.Queue()
             loop = asyncio.new_event_loop()
-            past_interactions_thread = threading.Thread(target=run_async_in_thread, args=(loop, self.retrieve_past_interactions, message, result_queue))
-            past_interactions_thread.start()
-            past_interactions_thread.join()
-            past_interactions = result_queue.get()
-            past_context = "\n".join([f"User: {interaction['user_message']}\nAI: {interaction['ai_response']}" for interaction in past_interactions])
-            complete_prompt = f"{past_context}\nUser: {message}"
-            response = llama_generate(complete_prompt)
+
+            include_past_context = "[pastcontext]" in user_input and "[/pastcontext]" in user_input
+            user_input = user_input.replace("[pastcontext]", "").replace("[/pastcontext]", "")
+
+            if include_past_context:
+                past_interactions_thread = threading.Thread(target=self.run_async_in_thread, args=(loop, self.retrieve_past_interactions, user_input, result_queue))
+                past_interactions_thread.start()
+                past_interactions_thread.join()
+                past_interactions = result_queue.get()
+                past_context = "\n".join([f"User: {interaction['user_message']}\nAI: {interaction['ai_response']}" for interaction in past_interactions])
+            else:
+                past_context = ""
+
+            complete_prompt = f"{past_context}\nUser: {user_input}"
+            response = llama_generate(complete_prompt, self.client)  # Ensure this call is correct for your Llama model
             if response:
                 response_text = response
                 self.response_queue.put({'type': 'text', 'data': response_text})
-                keywords = self.extract_keywords(message)
-                mapped_classes = self.map_keywords_to_weaviate_classes(keywords, message)
-                self.create_interaction_history_object(message, response_text)
             else:
                 logger.error("No response generated by llama_generate")
-
         except Exception as e:
             logger.error(f"Error in generate_response: {e}")
+
+    def run_async_in_thread(self, loop, coro_func, user_input, result_queue):
+        asyncio.set_event_loop(loop)
+        coro = coro_func(user_input, result_queue)
+        loop.run_until_complete(coro)
+
+
+    async def fetch_interactions(self):
+        try:
+            query = {
+                "query": """
+                {
+                    Get {
+                        InteractionHistory(sort: [{path: "response_time", order: desc}], limit: 5) {
+                            user_message
+                            ai_response
+                            response_time
+                        }
+                    }
+                }
+                """
+            }
+            response = await self.client.query.raw(query)
+            if 'data' in response and 'Get' in response['data'] and 'InteractionHistory' in response['data']['Get']:
+                interactions = response['data']['Get']['InteractionHistory']
+                return [{'user_message': interaction['user_message'], 'ai_response': interaction['ai_response'], 'response_time': interaction['response_time']} for interaction in interactions]
+            else:
+                return []
+        except Exception as e:
+            logger.error(f"Error fetching interactions from Weaviate: {e}")
+            return []
+
 
 
     def on_submit(self, event=None):
         download_nltk_data()
-        message = self.input_textbox.get("1.0", tk.END).strip()
-        if message:
-            self.text_box.insert(tk.END, f"You: {message}\n")        
+        user_input = self.input_textbox.get("1.0", tk.END).strip()
+        if user_input:
+            self.text_box.insert(tk.END, f"You: {user_input}\n")        
             self.input_textbox.delete("1.0", tk.END)
             self.input_textbox.config(height=1)
             self.text_box.see(tk.END)
-            self.executor.submit(self.generate_response, message)
-            self.executor.submit(self.generate_images, message)
+            self.executor.submit(self.generate_response, user_input)
+            self.executor.submit(self.generate_images, user_input)  # Image generation
             self.after(100, self.process_queue)
         return "break"
+
 
 
     def create_object(self, class_name, object_data):
