@@ -482,16 +482,17 @@ class App(customtkinter.CTk):
             return []
 
 
+
     def generate_images(self, message):
         try:
             url = config['IMAGE_GENERATION_URL']
             payload = {
                 "prompt": message,
-                "steps" : 79,
-                "seed" : random.randrange(sys.maxsize),
+                "steps": 79,
+                "seed": random.randrange(sys.maxsize),
                 "enable_hr": "false",
                 "denoising_strength": "0.7",
-                "cfg_scale" : "7",
+                "cfg_scale": "7",
                 "width": 326,
                 "height": 656,
                 "restore_faces": "true",
@@ -500,18 +501,37 @@ class App(customtkinter.CTk):
             if response.status_code == 200:
                 try:
                     r = response.json()
-                    for i in r['images']:
-                        image = Image.open(io.BytesIO(base64.b64decode(i.split(",",1)[0])))
+                    for img_data in r['images']:
+                        # Check if img_data contains a comma and split accordingly
+                        if ',' in img_data:
+                            base64_data = img_data.split(",", 1)[1]
+                        else:
+                            base64_data = img_data
+
+                        # Decode and open the image
+                        image_data = base64.b64decode(base64_data)
+                        image = Image.open(io.BytesIO(image_data))
                         img_tk = ImageTk.PhotoImage(image)
+
+                        # Display the image in the GUI
                         self.response_queue.put({'type': 'image', 'data': img_tk})
                         self.image_label.image = img_tk
+
+                        # Save the image to a file
+                        file_name = f"generated_image_{uuid.uuid4()}.png"
+                        image_path = os.path.join("saved_images", file_name)
+                        if not os.path.exists("saved_images"):
+                            os.makedirs("saved_images")
+                        image.save(image_path)
+
                 except ValueError as e:
                     print("Error processing image data: ", e)
             else:
                 print("Error generating image: ", response.status_code)
 
         except Exception as e:
-             logger.error(f"Error in generate_images: {e}")
+            logger.error(f"Error in generate_images: {e}")
+
 
     def setup_gui(self):
         self.title("OneLoveIPFS AI")
