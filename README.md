@@ -11,7 +11,7 @@
 
 We are thrilled to announce the first full release of Humoid GUI, version 1.0.0! This release introduces a fully functional graphical user interface application for interacting with humanoid robots or simulations. Humoid GUI combines AI, database integration, and natural language processing to provide an interactive and user-friendly experience.
 
-## What's New in 1.0.0
+## AI Features
 
 - **AI-Powered Conversations**: Dynamic conversations with AI, powered by the Llama natural language processing model.
 - **Database Integration**: Interactions stored in a Vector database for persistence and analysis.
