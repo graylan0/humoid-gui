@@ -9,12 +9,12 @@ import queue
 import uuid
 import customtkinter
 import requests
-from customtkinter import CTkImage
 import io
 import sys
 import random
 import asyncio
 import weaviate
+import re
 from concurrent.futures import ThreadPoolExecutor
 from summa import summarizer
 from textblob import TextBlob
@@ -27,13 +27,33 @@ import nltk
 import json
 from os import path
 import weaviate
-
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from fastapi import Security, Depends, HTTPException
+from fastapi.security.api_key import APIKeyHeader
+import re
+import logging
+from nltk import pos_tag, word_tokenize
+from collections import Counter
 
 
 bundle_dir = path.abspath(path.dirname(__file__))
 path_to_config = path.join(bundle_dir, 'config.json')
 model_path = path.join(bundle_dir, 'llama-2-7b-chat.ggmlv3.q8_0.bin')
 logo_path = path.join(bundle_dir, 'logo.png')
+
+
+API_KEY_NAME = "access_token"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+
+def get_api_key(api_key_header: str = Security(api_key_header)):
+    if api_key_header == API_KEY:
+        return api_key_header
+    else:
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+
 
 def download_nltk_data():
     try:
@@ -65,12 +85,34 @@ q = queue.Queue()
 logger = logging.getLogger(__name__)
 config = load_config()
 DB_NAME = config['DB_NAME']
+API_KEY = config['API_KEY']
 WEAVIATE_ENDPOINT = config['WEAVIATE_ENDPOINT']
 WEAVIATE_QUERY_PATH = config['WEAVIATE_QUERY_PATH']
 client = weaviate.Client(
     url=WEAVIATE_ENDPOINT,
 )
 weaviate_client = weaviate.Client(url=WEAVIATE_ENDPOINT)
+app = FastAPI()
+
+
+def run_api():
+    uvicorn.run(app, host="127.0.0.1", port=8000)
+
+
+api_thread = threading.Thread(target=run_api, daemon=True)
+api_thread.start()
+
+
+class UserInput(BaseModel):
+    message: str
+
+@app.post("/process/")
+async def process_input(user_input: UserInput, api_key: str = Depends(get_api_key)):
+    try:
+        response = llama_generate(user_input.message, weaviate_client)
+        return {"response": response}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 async def init_db():
@@ -115,93 +157,94 @@ llm = Llama(
 )
 
 
+def is_code_like(chunk):
+    code_patterns = r'\b(def|class|import|if|else|for|while|return|function|var|let|const|print)\b|[\{\}\(\)=><\+\-\*/]'
+    return bool(re.search(code_patterns, chunk))
+
+
+def determine_token(chunk, max_words_to_check=100):
+    if not chunk:
+        return "[attention]"
+
+    if is_code_like(chunk):
+        return "[code]"
+
+    words = word_tokenize(chunk)[:max_words_to_check]
+    tagged_words = pos_tag(words)
+
+    pos_counts = Counter(tag[:2] for _, tag in tagged_words)
+    most_common_pos, _ = pos_counts.most_common(1)[0]
+
+    if most_common_pos == 'VB':
+        return "[action]"
+    elif most_common_pos == 'NN':
+        return "[subject]"
+    elif most_common_pos in ['JJ', 'RB']:
+        return "[description]"
+    else:
+        return "[general]"
+
+
+def find_max_overlap(chunk, next_chunk):
+    max_overlap = min(len(chunk), 400)
+    return next((overlap for overlap in range(max_overlap, 0, -1) if chunk.endswith(next_chunk[:overlap])), 0)
+
+
+def truncate_text(text, max_words=25):
+    return ' '.join(text.split()[:max_words])
+
+def fetch_relevant_info(chunk, weaviate_client):
+    if not weaviate_client:
+        logger.error("Weaviate client is not provided.")
+        return ""
+
+    query = f"""
+    {{
+        Get {{
+            InteractionHistory(nearText: {{
+                concepts: ["{chunk}"],
+                certainty: 0.7
+            }}) {{
+                user_message
+                ai_response
+                .with_limit(1)
+            }}
+        }}
+    }}
+    """
+    try:
+        response = weaviate_client.query.raw(query)
+        logger.debug(f"Query sent: {query}")
+        logger.debug(f"Response received: {response}")
+
+        if response and 'data' in response and 'Get' in response['data'] and 'InteractionHistory' in response['data']['Get']:
+            interaction = response['data']['Get']['InteractionHistory'][0]
+            return f"{truncate_text(interaction['user_message'])} {truncate_text(interaction['ai_response'])}"
+        else:
+            logger.error("Weaviate client returned no relevant data for query: " + query)
+            return ""
+    except Exception as e:
+        logger.error(f"Weaviate query failed: {e}")
+        return ""
+
 def llama_generate(prompt, weaviate_client=None):
     config = load_config()
     max_tokens = config.get('MAX_TOKENS', 3999)
-    chunk_size = config.get('CHUNK_SIZE', 1250) 
-
+    chunk_size = config.get('CHUNK_SIZE', 1250)
     try:
-        
-        def find_max_overlap(chunk, next_chunk):
-            max_overlap = min(len(chunk), 400)
-            for overlap in range(max_overlap, 0, -1):
-                if chunk.endswith(next_chunk[:overlap]):
-                    return overlap
-            return 0
-
-        def determine_token(chunk):
-
-            words = word_tokenize(chunk)
-            tagged_words = pos_tag(words)
-            verbs = [word for word, tag in tagged_words if tag.startswith('VB')]
-
-            if verbs:
-                return "[action]"
-            else:
-                return "[attention]"
-
-        def fetch_relevant_info(chunk, weaviate_client):
-
-            def truncate_text(text, max_words=25):
-                words = text.split()
-                return ' '.join(words[:max_words])
-
-            if weaviate_client:
-                query = f"""
-                {{
-                    Get {{
-                        InteractionHistory(nearText: {{
-                            concepts: ["{chunk}"],
-                            certainty: 0.7
-                        }}) {{
-                            user_message
-                            ai_response
-                            .with_limit(1)
-                        }}
-                    }}
-                }}
-                """
-                response = weaviate_client.query.raw(query)
-
-                if 'data' in response and 'Get' in response['data'] and 'InteractionHistory' in response['data']                ['Get']:
-                    interaction = response['data']['Get']['InteractionHistory'][0]
-                    user_message = truncate_text(interaction['user_message'])
-                    ai_response = truncate_text(interaction['ai_response'])
-                    return f"{user_message} {ai_response}"
-                else:
-                    return ""
-            return ""
-
-        def tokenize_and_generate(chunk, token):
-            inputs = llm(f"[{token}] {chunk}", max_tokens=min(max_tokens, chunk_size))
-
-            if not isinstance(inputs, dict):
-                logger.error(f"Output from Llama is not a dictionary: {type(inputs)}")
-                return None
-
-            choices = inputs.get('choices', [])
-            if not choices or not isinstance(choices[0], dict):
-                logger.error(f"No valid choices in Llama output")
-                return None
-
-            output = choices[0].get('text', '')
-            if not output:
-                logger.error(f"No text found in Llama output")
-                return None
-
-            return output
-
         prompt_chunks = [prompt[i:i + chunk_size] for i in range(0, len(prompt), chunk_size)]
         responses = []
         last_output = ""
 
-        for i, chunk in enumerate(prompt_chunks):
-            relevant_info = fetch_relevant_info(chunk, weaviate_client)
-            combined_chunk = f"{relevant_info} {chunk}"
-            
-
+        for i, current_chunk in enumerate(prompt_chunks):  # Renamed 'chunk' to 'current_chunk'
+            relevant_info = fetch_relevant_info(current_chunk, weaviate_client)
+            combined_chunk = f"{relevant_info} {current_chunk}"
             token = determine_token(combined_chunk)
-            output = tokenize_and_generate(combined_chunk, token)
+            output = tokenize_and_generate(combined_chunk, token, max_tokens, chunk_size)
+
+            if output is None:
+                logger.error(f"Failed to generate output for chunk: {combined_chunk}")
+                continue
 
             if i > 0 and last_output:
                 overlap = find_max_overlap(last_output, output)
@@ -211,9 +254,26 @@ def llama_generate(prompt, weaviate_client=None):
             last_output = output
 
         final_response = ''.join(responses)
-        return final_response
+        return final_response if final_response else None
     except Exception as e:
         logger.error(f"Error in llama_generate: {e}")
+        return None
+
+def tokenize_and_generate(chunk, token, max_tokens, chunk_size):
+    try:
+        inputs = llm(f"[{token}] {chunk}", max_tokens=min(max_tokens, chunk_size))
+        if inputs is None or not isinstance(inputs, dict):
+            logger.error(f"Llama model returned invalid output for input: {chunk}")
+            return None
+
+        choices = inputs.get('choices', [])
+        if not choices or not isinstance(choices[0], dict):
+            logger.error("No valid choices in Llama output")
+            return None
+
+        return choices[0].get('text', '')
+    except Exception as e:
+        logger.error(f"Error in tokenize_and_generate: {e}")
         return None
 
 
@@ -229,11 +289,13 @@ def run_async_in_thread(self, loop, coro_func, user_input, result_queue):
 def truncate_text(self, text, max_length=35):
     return text if len(text) <= max_length else text[:max_length] + '...'  
 
+
 def extract_verbs_and_nouns(text):
     words = word_tokenize(text)
     tagged_words = pos_tag(words)
     verbs_and_nouns = [word for word, tag in tagged_words if tag.startswith('VB') or tag.startswith('NN')]
     return verbs_and_nouns
+
 
 class App(customtkinter.CTk):
     def __init__(self):
@@ -242,7 +304,8 @@ class App(customtkinter.CTk):
         self.response_queue = queue.Queue()
         self.client = weaviate.Client(url=WEAVIATE_ENDPOINT)
         self.executor = ThreadPoolExecutor(max_workers=4)
-        
+
+
     async def retrieve_past_interactions(self, user_input, result_queue):
         try:
 
@@ -413,7 +476,7 @@ class App(customtkinter.CTk):
                 }}
             }}
             """
-            response = await self.client.query.raw(query)
+            response = self.client.query.raw(query)
             if 'data' in response and 'Get' in response['data'] and 'InteractionHistory' in response['data']['Get']:
                 interactions = response['data']['Get']['InteractionHistory']
                 result_queue.put(interactions)
@@ -422,6 +485,7 @@ class App(customtkinter.CTk):
         except Exception as e:
             logger.error(f"An error occurred while retrieving interactions: {e}")
             result_queue.put([])
+
 
     def generate_response(self, user_input):
         try:
@@ -436,7 +500,8 @@ class App(customtkinter.CTk):
                 past_interactions_thread.start()
                 past_interactions_thread.join()
                 past_interactions = result_queue.get()
-                past_context = "\n".join([f"User: {interaction['user_message']}\nAI: {interaction['ai_response']}" for interaction in past_interactions])
+                past_context_combined = "\n".join([f"User: {interaction['user_message']}\nAI: {interaction['ai_response']}" for interaction in past_interactions])
+                past_context = past_context_combined[-165:]
             else:
                 past_context = ""
 
@@ -471,7 +536,7 @@ class App(customtkinter.CTk):
                 }
                 """
             }
-            response = await self.client.query.raw(query)
+            response = self.client.query.raw(query)
             if 'data' in response and 'Get' in response['data'] and 'InteractionHistory' in response['data']['Get']:
                 interactions = response['data']['Get']['InteractionHistory']
                 return [{'user_message': interaction['user_message'], 'ai_response': interaction['ai_response'], 'response_time': interaction['response_time']} for interaction in interactions]
@@ -480,7 +545,6 @@ class App(customtkinter.CTk):
         except Exception as e:
             logger.error(f"Error fetching interactions from Weaviate: {e}")
             return []
-
 
 
     def on_submit(self, event=None):
@@ -495,7 +559,6 @@ class App(customtkinter.CTk):
             self.executor.submit(self.generate_images, user_input)
             self.after(100, self.process_queue)
         return "break"
-
 
 
     def create_object(self, class_name, object_data):
