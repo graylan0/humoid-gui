@@ -139,28 +139,19 @@ async def process_input(user_input: UserInput, api_key: str = Depends(get_api_ke
 async def init_db():
     try:
         async with aiosqlite.connect(DB_NAME) as db:
+
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS responses (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    trideque_point INT,
+                    user_id TEXT,
                     response TEXT,
-                    response_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    user_id INT
-                )
-            """)
-
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS context (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    trideque_point INT,
-                    summarization_context TEXT,
-                    full_text TEXT
+                    response_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
 
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT PRIMARY KEY,
                     name TEXT,
                     relationship_state TEXT
                 )
@@ -253,7 +244,7 @@ def fetch_relevant_info(chunk, weaviate_client, user_input):
        return ""
     
 
-def llama_generate(prompt, weaviate_client=None):
+def llama_generate(prompt, weaviate_client=None, user_input=None):
     config = load_config()
     max_tokens = config.get('MAX_TOKENS', 3999)
     chunk_size = config.get('CHUNK_SIZE', 1250)
@@ -263,7 +254,7 @@ def llama_generate(prompt, weaviate_client=None):
         last_output = ""
 
         for i, current_chunk in enumerate(prompt_chunks):
-            relevant_info = fetch_relevant_info(current_chunk, weaviate_client)
+            relevant_info = fetch_relevant_info(current_chunk, weaviate_client, user_input)
             combined_chunk = f"{relevant_info} {current_chunk}"
             token = determine_token(combined_chunk)
             output = tokenize_and_generate(combined_chunk, token, max_tokens, chunk_size)
@@ -326,6 +317,8 @@ def extract_verbs_and_nouns(text):
 class App(customtkinter.CTk):
     def __init__(self, user_identifier):
         super().__init__()
+        self.user_id = user_identifier  # Store user_id as an instance attribute
+        self.bot_id = "bot"  # You might also want to define bot_id here
         self.setup_gui()
         self.response_queue = queue.Queue()
         self.client = weaviate.Client(url=WEAVIATE_ENDPOINT)
@@ -517,6 +510,7 @@ class App(customtkinter.CTk):
             logger.error(f"An error occurred while retrieving interactions: {e}")
             result_queue.put([])
 
+
     async def generate_response(self, user_input):
         try:
             user_id = self.user_id
@@ -535,9 +529,11 @@ class App(customtkinter.CTk):
                     past_context = past_context_combined[-15:]
 
             complete_prompt = f"{past_context}\nUser: {user_input}"
+            logger.info(f"Generating response for prompt: {complete_prompt}")
             response = llama_generate(complete_prompt, self.client)
 
             if response:
+                logger.info(f"Generated response: {response}")
                 await save_bot_response(bot_id, response)
                 self.process_generated_response(response)
             else:
@@ -545,9 +541,11 @@ class App(customtkinter.CTk):
         except Exception as e:
             logger.error(f"Error in generate_response: {e}")
 
+
     def process_generated_response(self, response_text):
         self.response_queue.put({'type': 'text', 'data': response_text})
         self.play_response_audio(response_text)
+
 
     def play_response_audio(self, response_text):
         sentences = re.split('(?<=[.!?]) +', response_text)
@@ -600,13 +598,14 @@ class App(customtkinter.CTk):
         download_nltk_data()
         user_input = self.input_textbox.get("1.0", tk.END).strip()
         if user_input:
-            self.text_box.insert(tk.END, f"You: {user_input}\n")        
+            self.text_box.insert(tk.END, f"You: {user_input}\n")
             self.input_textbox.delete("1.0", tk.END)
             self.input_textbox.config(height=1)
             self.text_box.see(tk.END)
-            asyncio.run_coroutine_threadsafe(self.generate_response(user_input), asyncio.get_event_loop())
+            self.executor.submit(asyncio.run, self.generate_response(user_input))
             self.executor.submit(self.generate_images, user_input)
             self.after(100, self.process_queue)
+
         return "break"
 
 
@@ -752,8 +751,8 @@ class App(customtkinter.CTk):
 
 if __name__ == "__main__":
     try:
-        user_identifier = "gray00"
-        app = App(user_identifier)
+        user_id = "gray00"
+        app = App(user_id)
         loop = asyncio.get_event_loop()
         loop.run_until_complete(init_db())
         app.mainloop()
