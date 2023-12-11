@@ -543,23 +543,45 @@ class App(customtkinter.CTk):
 
 
     def process_generated_response(self, response_text):
-        self.response_queue.put({'type': 'text', 'data': response_text})
-        self.play_response_audio(response_text)
+        try:
+            self.response_queue.put({'type': 'text', 'data': response_text})
+            self.play_response_audio(response_text)
+        except Exception as e:
+            logger.error(f"Error in process_generated_response: {e}")
 
 
     def play_response_audio(self, response_text):
-        sentences = re.split('(?<=[.!?]) +', response_text)
-        silence = np.zeros(int(0.15 * SAMPLE_RATE))
-        pieces = []
-        for sentence in sentences:
-            audio_array = generate_audio(sentence, history_prompt="v2/en_speaker_6")
-            pieces += [audio_array, silence.copy()]
-        audio = np.concatenate(pieces)
-        file_name = str(uuid.uuid4()) + ".wav"
-        write_wav(file_name, SAMPLE_RATE, audio)
-        sd.play(audio, samplerate=SAMPLE_RATE)
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        try:
+            sentences = re.split('(?<=[.!?]) +', response_text)
+            silence = np.zeros(int(0.75 * SAMPLE_RATE))
+        
+            def generate_sentence_audio(sentence):
+                try:
+                    return generate_audio(sentence, history_prompt="v2/en_speaker_6")
+                except Exception as e:
+                    logger.error(f"Error generating audio for sentence '{sentence}': {e}")
+                    return np.zeros(0)
+
+            with ThreadPoolExecutor(max_workers=min(4, len(sentences))) as executor:
+                audio_arrays = list(executor.map(generate_sentence_audio, sentences))
+
+
+            audio_arrays = [audio for audio in audio_arrays if audio.size > 0]
+
+            if audio_arrays:
+                pieces = [piece for audio in audio_arrays for piece in (audio, silence.copy())]
+                audio = np.concatenate(pieces[:-1])
+
+                file_name = str(uuid.uuid4()) + ".wav"
+                write_wav(file_name, SAMPLE_RATE, audio)
+                sd.play(audio, samplerate=SAMPLE_RATE)
+            else:
+                logger.error("No audio generated due to errors in all sentences.")
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception as e:
+            logger.error(f"Error in play_response_audio: {e}")
 
 
     def run_async_in_thread(self, loop, coro_func, user_input, result_queue):
