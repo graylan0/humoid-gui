@@ -1,41 +1,44 @@
+import torch
 import tkinter as tk
+import customtkinter
 import threading
 import os
 import aiosqlite
+import weaviate
 import logging
 import numpy as np
 import base64
 import queue
 import uuid
-import customtkinter
 import requests
 import io
 import sys
 import random
 import asyncio
-import weaviate
 import re
+import uvicorn
+import json
 from concurrent.futures import ThreadPoolExecutor
-from summa import summarizer
-from textblob import TextBlob
-from weaviate.util import generate_uuid5
 from PIL import Image, ImageTk
 from llama_cpp import Llama
+from os import path
+from fastapi import FastAPI, HTTPException, Security, Depends
+from fastapi.security.api_key import APIKeyHeader
+from pydantic import BaseModel
+from collections import Counter
+from bark import SAMPLE_RATE, generate_audio, preload_models
+import sounddevice as sd
+from scipy.io.wavfile import write as write_wav
+from summa import summarizer
+import nltk
+from textblob import TextBlob
+from weaviate.util import generate_uuid5
 from nltk import pos_tag, word_tokenize
 from nltk.corpus import wordnet as wn
-import nltk
-import json
-from os import path
-import weaviate
-import uvicorn
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from fastapi import Security, Depends, HTTPException
-from fastapi.security.api_key import APIKeyHeader
-import re
-import logging
-from nltk import pos_tag, word_tokenize
-from collections import Counter
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["SUNO_USE_SMALL_MODELS"] = "1"
+
 
 
 bundle_dir = path.abspath(path.dirname(__file__))
@@ -53,6 +56,24 @@ def get_api_key(api_key_header: str = Security(api_key_header)):
         return api_key_header
     else:
         raise HTTPException(status_code=403, detail="Invalid API Key")
+    
+
+async def save_user_message(user_id, user_input):
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute("INSERT INTO responses (user_id, response) VALUES (?, ?)", (user_id, user_input))
+            await db.commit()
+    except Exception as e:
+        logger.error(f"Error saving user message to database: {e}")
+
+
+async def save_bot_response(bot_id, bot_response):
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute("INSERT INTO responses (user_id, response) VALUES (?, ?)", (bot_id, bot_response))
+            await db.commit()
+    except Exception as e:
+        logger.error(f"Error saving bot response to database: {e}")
 
 
 def download_nltk_data():
@@ -193,39 +214,44 @@ def find_max_overlap(chunk, next_chunk):
 def truncate_text(text, max_words=25):
     return ' '.join(text.split()[:max_words])
 
-def fetch_relevant_info(chunk, weaviate_client):
-    if not weaviate_client:
-        logger.error("Weaviate client is not provided.")
-        return ""
 
-    query = f"""
-    {{
-        Get {{
-            InteractionHistory(nearText: {{
-                concepts: ["{chunk}"],
-                certainty: 0.7
-            }}) {{
-                user_message
-                ai_response
-                .with_limit(1)
-            }}
-        }}
-    }}
-    """
-    try:
-        response = weaviate_client.query.raw(query)
-        logger.debug(f"Query sent: {query}")
-        logger.debug(f"Response received: {response}")
+def fetch_relevant_info(chunk, weaviate_client, user_input):
+   if not weaviate_client:
+       logger.error("Weaviate client is not provided.")
+       return ""
 
-        if response and 'data' in response and 'Get' in response['data'] and 'InteractionHistory' in response['data']['Get']:
-            interaction = response['data']['Get']['InteractionHistory'][0]
-            return f"{truncate_text(interaction['user_message'])} {truncate_text(interaction['ai_response'])}"
-        else:
-            logger.error("Weaviate client returned no relevant data for query: " + query)
-            return ""
-    except Exception as e:
-        logger.error(f"Weaviate query failed: {e}")
-        return ""
+   summarized_chunk = summarizer.summarize(chunk)
+   query_chunk = summarized_chunk if summarized_chunk else chunk
+
+
+   if not query_chunk:
+       logger.error("Query chunk is empty.")
+       return ""
+
+   query = {
+       "query": {
+           "nearText": {
+               "concepts": {user_input},
+               "certainty": 0.7
+           }
+       }
+   }
+
+   try:
+       response = weaviate_client.query.raw(query)
+       logger.debug(f"Query sent: {query}")
+       logger.debug(f"Response received: {response}")
+
+       if response and 'data' in response and 'Get' in response['data'] and 'InteractionHistory' in response['data']['Get']:
+           interaction = response['data']['Get']['InteractionHistory'][0]
+           return f"{interaction['user_message']} {interaction['ai_response']}"
+       else:
+           logger.error("Weaviate client returned no relevant data for query: " + query)
+           return ""
+   except Exception as e:
+       logger.error(f"Weaviate query failed: {e}")
+       return ""
+    
 
 def llama_generate(prompt, weaviate_client=None):
     config = load_config()
@@ -236,7 +262,7 @@ def llama_generate(prompt, weaviate_client=None):
         responses = []
         last_output = ""
 
-        for i, current_chunk in enumerate(prompt_chunks):  # Renamed 'chunk' to 'current_chunk'
+        for i, current_chunk in enumerate(prompt_chunks):
             relevant_info = fetch_relevant_info(current_chunk, weaviate_client)
             combined_chunk = f"{relevant_info} {current_chunk}"
             token = determine_token(combined_chunk)
@@ -298,7 +324,7 @@ def extract_verbs_and_nouns(text):
 
 
 class App(customtkinter.CTk):
-    def __init__(self):
+    def __init__(self, user_identifier):
         super().__init__()
         self.setup_gui()
         self.response_queue = queue.Queue()
@@ -313,13 +339,13 @@ class App(customtkinter.CTk):
             concepts_query = ' '.join(keywords)
 
 
-            def fetch_relevant_info(concepts_query, weaviate_client):
-                if weaviate_client and concepts_query:
+            def fetch_relevant_info(chunk, weaviate_client):
+                if weaviate_client:
                     query = f"""
                     {{
                         Get {{
                             InteractionHistory(nearText: {{
-                                concepts: ["{concepts_query}"],
+                                concepts: ["{chunk}"],
                                 certainty: 0.7
                             }}) {{
                                 user_message
@@ -330,6 +356,7 @@ class App(customtkinter.CTk):
                     }}
                     """
                     response = weaviate_client.query.raw(query)
+
                     if 'data' in response and 'Get' in response['data'] and 'InteractionHistory' in response['data']['Get']:
                         interaction = response['data']['Get']['InteractionHistory'][0]
                         return interaction['user_message'], interaction['ai_response']
@@ -361,11 +388,14 @@ class App(customtkinter.CTk):
         response_blob = TextBlob(ai_response)
         keywords = response_blob.noun_phrases
         sentiment = response_blob.sentiment.polarity
+        enhanced_keywords = set()
+        for phrase in keywords:
+            enhanced_keywords.update(phrase.split())
 
         interaction_object = {
             "userMessage": user_message,
             "aiResponse": ai_response,
-            "keywords": list(keywords),
+            "keywords": list(enhanced_keywords),
             "sentiment": sentiment
         }
 
@@ -377,10 +407,11 @@ class App(customtkinter.CTk):
                 class_name="InteractionHistory",
                 uuid=interaction_uuid
             )
-            print(f"Interaction stored in Weaviate with UUID: {interaction_uuid}")
-        except Exception as e:
-            print(f"Error storing interaction in Weaviate: {e}")
 
+            print(f"Interaction stored in Weaviate with UUID: {interaction_uuid}")
+
+        except Exception as e:            
+            print(f"Error storing interaction in Weaviate: {e}")
 
     def __exit__(self, exc_type, exc_value, traceback):
         self.executor.shutdown(wait=True)
@@ -467,11 +498,11 @@ class App(customtkinter.CTk):
                 Get {{
                     InteractionHistory(nearText: {{
                         concepts: ["{concepts_query}"],
-                        certainty: 0.7
+                        certainty: 0.8
                     }}) {{
                         user_message
                         ai_response
-                        .with_limit(5)  # Adjust the limit as needed
+                        .with_limit(12)  # Adjust the limit as needed
                     }}
                 }}
             }}
@@ -486,34 +517,52 @@ class App(customtkinter.CTk):
             logger.error(f"An error occurred while retrieving interactions: {e}")
             result_queue.put([])
 
-
-    def generate_response(self, user_input):
+    async def generate_response(self, user_input):
         try:
-            result_queue = queue.Queue()
-            loop = asyncio.new_event_loop()
+            user_id = self.user_id
+            bot_id = self.bot_id
 
-            include_past_context = "[pastcontext]" in user_input and "[/pastcontext]" in user_input
+            await save_user_message(user_id, user_input)
+
+            include_past_context = "[pastcontext]" in user_input
             user_input = user_input.replace("[pastcontext]", "").replace("[/pastcontext]", "")
 
+            past_context = ""
             if include_past_context:
-                past_interactions_thread = threading.Thread(target=self.run_async_in_thread, args=(loop, self.retrieve_past_interactions, user_input, result_queue))
-                past_interactions_thread.start()
-                past_interactions_thread.join()
-                past_interactions = result_queue.get()
-                past_context_combined = "\n".join([f"User: {interaction['user_message']}\nAI: {interaction['ai_response']}" for interaction in past_interactions])
-                past_context = past_context_combined[-165:]
-            else:
-                past_context = ""
+                past_interactions = await self.retrieve_past_interactions(user_input)
+                if past_interactions:
+                    past_context_combined = "\n".join([f"User: {interaction['user_message']}\nAI: {interaction['ai_response']}" for interaction in past_interactions])
+                    past_context = past_context_combined[-15:]
 
             complete_prompt = f"{past_context}\nUser: {user_input}"
             response = llama_generate(complete_prompt, self.client)
+
             if response:
-                response_text = response
-                self.response_queue.put({'type': 'text', 'data': response_text})
+                await save_bot_response(bot_id, response)
+                self.process_generated_response(response)
             else:
                 logger.error("No response generated by llama_generate")
         except Exception as e:
             logger.error(f"Error in generate_response: {e}")
+
+    def process_generated_response(self, response_text):
+        self.response_queue.put({'type': 'text', 'data': response_text})
+        self.play_response_audio(response_text)
+
+    def play_response_audio(self, response_text):
+        sentences = re.split('(?<=[.!?]) +', response_text)
+        silence = np.zeros(int(0.15 * SAMPLE_RATE))
+        pieces = []
+        for sentence in sentences:
+            audio_array = generate_audio(sentence, history_prompt="v2/en_speaker_6")
+            pieces += [audio_array, silence.copy()]
+        audio = np.concatenate(pieces)
+        file_name = str(uuid.uuid4()) + ".wav"
+        write_wav(file_name, SAMPLE_RATE, audio)
+        sd.play(audio, samplerate=SAMPLE_RATE)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
 
     def run_async_in_thread(self, loop, coro_func, user_input, result_queue):
         asyncio.set_event_loop(loop)
@@ -527,7 +576,7 @@ class App(customtkinter.CTk):
                 "query": """
                 {
                     Get {
-                        InteractionHistory(sort: [{path: "response_time", order: desc}], limit: 5) {
+                        InteractionHistory(sort: [{path: "response_time", order: desc}], limit: 15) {
                             user_message
                             ai_response
                             response_time
@@ -555,7 +604,7 @@ class App(customtkinter.CTk):
             self.input_textbox.delete("1.0", tk.END)
             self.input_textbox.config(height=1)
             self.text_box.see(tk.END)
-            self.executor.submit(self.generate_response, user_input)
+            asyncio.run_coroutine_threadsafe(self.generate_response(user_input), asyncio.get_event_loop())
             self.executor.submit(self.generate_images, user_input)
             self.after(100, self.process_queue)
         return "break"
@@ -605,45 +654,57 @@ class App(customtkinter.CTk):
     def generate_images(self, message):
         try:
             url = config['IMAGE_GENERATION_URL']
-            payload = {
-                "prompt": message,
-                "steps": 79,
-                "seed": random.randrange(sys.maxsize),
-                "enable_hr": "false",
-                "denoising_strength": "0.7",
-                "cfg_scale": "7",
-                "width": 326,
-                "height": 656,
-                "restore_faces": "true",
-            }
+            payload = self.prepare_image_generation_payload(message)
             response = requests.post(url, json=payload)
+
             if response.status_code == 200:
-                try:
-                    r = response.json()
-                    for img_data in r['images']:
-
-                        if ',' in img_data:
-                            base64_data = img_data.split(",", 1)[1]
-                        else:
-                            base64_data = img_data
-                        image_data = base64.b64decode(base64_data)
-                        image = Image.open(io.BytesIO(image_data))
-                        img_tk = ImageTk.PhotoImage(image)
-                        self.response_queue.put({'type': 'image', 'data': img_tk})
-                        self.image_label.image = img_tk
-                        file_name = f"generated_image_{uuid.uuid4()}.png"
-                        image_path = os.path.join("saved_images", file_name)
-                        if not os.path.exists("saved_images"):
-                            os.makedirs("saved_images")
-                        image.save(image_path)
-
-                except ValueError as e:
-                    print("Error processing image data: ", e)
+                self.process_image_response(response)
             else:
-                print("Error generating image: ", response.status_code)
+                logger.error(f"Error generating image: HTTP {response.status_code}")
 
         except Exception as e:
             logger.error(f"Error in generate_images: {e}")
+
+
+    def prepare_image_generation_payload(self, message):
+        return {
+            "prompt": message,
+            "steps": 24,
+            "seed": random.randrange(sys.maxsize),
+            "enable_hr": "false",
+            "denoising_strength": "0.7",
+            "cfg_scale": "7",
+            "width": 326,
+            "height": 556,
+            "restore_faces": "true",
+        }
+
+
+    def process_image_response(self, response):
+        try:
+            image_data = response.json()['images']
+            for img_data in image_data:
+                img_tk = self.convert_base64_to_tk(img_data)
+                self.response_queue.put({'type': 'image', 'data': img_tk})
+                self.save_generated_image(img_tk)
+        except ValueError as e:
+            logger.error("Error processing image data: ", e)
+
+
+    def convert_base64_to_tk(self, base64_data):
+        if ',' in base64_data:
+            base64_data = base64_data.split(",", 1)[1]
+        image_data = base64.b64decode(base64_data)
+        image = Image.open(io.BytesIO(image_data))
+        return ImageTk.PhotoImage(image)
+
+
+    def save_generated_image(self, img_tk):
+        file_name = f"generated_image_{uuid.uuid4()}.png"
+        image_path = os.path.join("saved_images", file_name)
+        if not os.path.exists("saved_images"):
+            os.makedirs("saved_images")
+        img_tk.image.save(image_path)
 
 
     def setup_gui(self):
@@ -691,8 +752,8 @@ class App(customtkinter.CTk):
 
 if __name__ == "__main__":
     try:
-        
-        app = App()
+        user_identifier = "gray00"
+        app = App(user_identifier)
         loop = asyncio.get_event_loop()
         loop.run_until_complete(init_db())
         app.mainloop()
