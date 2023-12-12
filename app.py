@@ -40,7 +40,6 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 os.environ["SUNO_USE_SMALL_MODELS"] = "1"
 
 
-
 bundle_dir = path.abspath(path.dirname(__file__))
 path_to_config = path.join(bundle_dir, 'config.json')
 model_path = path.join(bundle_dir, 'llama-2-7b-chat.ggmlv3.q8_0.bin')
@@ -304,21 +303,39 @@ def run_async_in_thread(self, loop, coro_func, user_input, result_queue):
 
 
 def truncate_text(self, text, max_length=35):
-    return text if len(text) <= max_length else text[:max_length] + '...'  
+    try:
+        if not isinstance(text, str):
+            raise ValueError("Input must be a string")
+
+        return text if len(text) <= max_length else text[:max_length] + '...'
+
+    except Exception as e:
+
+        print(f"Error in truncate_text: {e}")
+        return ""
 
 
 def extract_verbs_and_nouns(text):
-    words = word_tokenize(text)
-    tagged_words = pos_tag(words)
-    verbs_and_nouns = [word for word, tag in tagged_words if tag.startswith('VB') or tag.startswith('NN')]
-    return verbs_and_nouns
+    try:
+        if not isinstance(text, str):
+            raise ValueError("Input must be a string")
+
+        words = word_tokenize(text)
+        tagged_words = pos_tag(words)
+        verbs_and_nouns = [word for word, tag in tagged_words if tag.startswith('VB') or tag.startswith('NN')]
+        return verbs_and_nouns
+
+    except Exception as e:
+
+        print(f"Error in extract_verbs_and_nouns: {e}")
+        return []
 
 
 class App(customtkinter.CTk):
     def __init__(self, user_identifier):
         super().__init__()
-        self.user_id = user_identifier  # Store user_id as an instance attribute
-        self.bot_id = "bot"  # You might also want to define bot_id here
+        self.user_id = user_identifier
+        self.bot_id = "bot"
         self.setup_gui()
         self.response_queue = queue.Queue()
         self.client = weaviate.Client(url=WEAVIATE_ENDPOINT)
