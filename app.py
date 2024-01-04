@@ -39,6 +39,49 @@ from datetime import datetime
 import aiosqlite
 import uuid
 import json
+from elevenlabs import generate, play
+import asyncio
+from elevenlabs import set_api_key
+
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["SUNO_USE_SMALL_MODELS"] = "1"
+executor = ThreadPoolExecutor(max_workers=5)
+bundle_dir = path.abspath(path.dirname(__file__))
+path_to_config = path.join(bundle_dir, 'config.json')
+model_path = path.join(bundle_dir, 'llama-2-7b-chat.ggmlv3.q8_0.bin')
+logo_path = path.join(bundle_dir, 'logo.png')
+
+
+API_KEY_NAME = "access_token"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+
+def load_config(file_path=path_to_config):
+    with open(file_path, 'r') as file:
+        return json.load(file)
+
+q = queue.Queue()
+logger = logging.getLogger(__name__)
+config = load_config()
+ELEVEN_LABS_KEY =  config['ELEVEN_LABS_KEY']
+set_api_key(ELEVEN_LABS_KEY)
+DB_NAME = config['DB_NAME']
+API_KEY = config['API_KEY']
+WEAVIATE_ENDPOINT = config['WEAVIATE_ENDPOINT']
+WEAVIATE_QUERY_PATH = config['WEAVIATE_QUERY_PATH']
+weaviate_client = weaviate.Client(url=WEAVIATE_ENDPOINT)
+app = FastAPI()
+
+
+def run_api():
+    uvicorn.run(app, host="127.0.0.1", port=8000)
+
+
+api_thread = threading.Thread(target=run_api, daemon=True)
+api_thread.start()
+API_KEY_NAME = "access_token"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
 
 def generate_uuid_for_weaviate(identifier, namespace=''):
@@ -64,19 +107,6 @@ def is_valid_uuid(uuid_to_test, version=5):
     except ValueError:
         return False
     
-
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-os.environ["SUNO_USE_SMALL_MODELS"] = "1"
-executor = ThreadPoolExecutor(max_workers=5)
-bundle_dir = path.abspath(path.dirname(__file__))
-path_to_config = path.join(bundle_dir, 'config.json')
-model_path = path.join(bundle_dir, 'llama-2-7b-chat.ggmlv3.q8_0.bin')
-logo_path = path.join(bundle_dir, 'logo.png')
-
-
-API_KEY_NAME = "access_token"
-api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
-
 
 def get_api_key(api_key_header: str = Security(api_key_header)):
     if api_key_header == API_KEY:
@@ -122,7 +152,7 @@ async def init_db():
         raise
 
 
-def save_user_message(user_id, user_input):
+async def save_user_message(user_id, user_input):
     try:
         response_time = get_current_multiversal_time()
         unique_string = f"{user_id}-{user_input}-{response_time}"
@@ -138,21 +168,17 @@ def save_user_message(user_id, user_input):
             "response_time": response_time
         }
 
-        def db_operations():
-            with aiosqlite.connect(DB_NAME) as db:
-                db.execute("INSERT INTO local_responses (user_id, response, response_time) VALUES (?, ?, ?)",
-                           (user_id, user_input, response_time))
-                db.commit()
-                weaviate_client.data_object.create(data_object, str(generated_uuid), "InteractionHistory")
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute("INSERT INTO local_responses (user_id, response, response_time) VALUES (?, ?, ?)",
+                             (user_id, user_input, response_time))
+            await db.commit()
 
-        executor = ThreadPoolExecutor(max_workers=1)
-        executor.submit(db_operations)
+        weaviate_client.data_object.create(data_object, str(generated_uuid), "InteractionHistory")
 
     except Exception as e:
         logger.error(f"Error saving user message: {e}")
 
-
-def save_bot_response(bot_id, bot_response):
+async def save_bot_response(bot_id, bot_response):
     try:
         response_time = get_current_multiversal_time()
         generated_uuid = str(uuid.uuid4())
@@ -163,19 +189,15 @@ def save_bot_response(bot_id, bot_response):
             "response_time": response_time
         }
 
-        def db_operations():
-            with aiosqlite.connect(DB_NAME) as db:
-                db.execute("INSERT INTO local_responses (user_id, response, response_time) VALUES (?, ?, ?)",
-                           (bot_id, bot_response, response_time))
-                db.commit()
-                weaviate_client.data_object.create(data_object, generated_uuid, "InteractionHistory")
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute("INSERT INTO local_responses (user_id, response, response_time) VALUES (?, ?, ?)",
+                             (bot_id, bot_response, response_time))
+            await db.commit()
 
-        executor = ThreadPoolExecutor(max_workers=1)
-        executor.submit(db_operations)
+        weaviate_client.data_object.create(data_object, generated_uuid, "InteractionHistory")
 
     except Exception as e:
         logger.error(f"Error saving bot response: {e}")
-
 
 def download_nltk_data():
     try:
@@ -196,30 +218,6 @@ def download_nltk_data():
 
     except Exception as e:
         print(f"Error downloading NLTK data: {e}")
-
-
-def load_config(file_path=path_to_config):
-    with open(file_path, 'r') as file:
-        return json.load(file)
-
-
-q = queue.Queue()
-logger = logging.getLogger(__name__)
-config = load_config()
-DB_NAME = config['DB_NAME']
-API_KEY = config['API_KEY']
-WEAVIATE_ENDPOINT = config['WEAVIATE_ENDPOINT']
-WEAVIATE_QUERY_PATH = config['WEAVIATE_QUERY_PATH']
-weaviate_client = weaviate.Client(url=WEAVIATE_ENDPOINT)
-app = FastAPI()
-
-
-def run_api():
-    uvicorn.run(app, host="127.0.0.1", port=8000)
-
-
-api_thread = threading.Thread(target=run_api, daemon=True)
-api_thread.start()
 
 
 class UserInput(BaseModel):
@@ -615,46 +613,40 @@ class App(customtkinter.CTk):
             user_id = self.user_id
             bot_id = self.bot_id
 
-            
-            if asyncio.iscoroutinefunction(save_user_message):
-                await save_user_message(user_id, user_input)
-            else:
-                
-                save_user_message(user_id, user_input)
+            # Save user message
+            await save_user_message(user_id, user_input)
 
+            # Process the input for context and generate a response
             include_past_context = "[pastcontext]" in user_input
             user_input = user_input.replace("[pastcontext]", "").replace("[/pastcontext]", "")
             past_context = ""
+
             if include_past_context:
                 result_queue = queue.Queue()
-                
-                if asyncio.iscoroutinefunction(self.retrieve_past_interactions):
-                    await self.retrieve_past_interactions(user_input, result_queue)
-                else:
-                    
-                    self.retrieve_past_interactions(user_input, result_queue)
-
-                past_interactions = result_queue.get() 
+                await self.retrieve_past_interactions(user_input, result_queue)
+                past_interactions = result_queue.get()
                 if past_interactions:
-                    past_context_combined = "\n".join([f"User: {interaction['user_message']}\nAI: {interaction['ai_response']}" for interaction in past_interactions])
+                    past_context_combined = "\n".join(
+                        [f"User: {interaction['user_message']}\nAI: {interaction['ai_response']}" 
+                         for interaction in past_interactions])
                     past_context = past_context_combined[-1500:]
 
             complete_prompt = f"{past_context}\nUser: {user_input}"
             logger.info(f"Generating response for prompt: {complete_prompt}")
-            response = llama_generate(complete_prompt, self.client)
+
+            # Generate response using Llama model
+            response = llama_generate(complete_prompt, self.client)  # llama_generate is called without await
             if response:
                 logger.info(f"Generated response: {response}")
 
-                
-                loop = asyncio.get_running_loop()
-                if asyncio.iscoroutinefunction(save_bot_response):
-                    await save_bot_response(bot_id, response)
-                else:
-                    loop.run_in_executor(None, save_bot_response, bot_id, response)
+                # Save bot response
+                await save_bot_response(bot_id, response)
 
+                # Process and display the generated response
                 self.process_generated_response(response)
             else:
                 logger.error("No response generated by llama_generate")
+
         except Exception as e:
             logger.error(f"Error in generate_response: {e}")
 
@@ -662,11 +654,23 @@ class App(customtkinter.CTk):
     def process_generated_response(self, response_text):
         try:
             self.response_queue.put({'type': 'text', 'data': response_text})
-          # self.play_response_audio(response_text)
+            self.play_response_audio(response_text)
         except Exception as e:
             logger.error(f"Error in process_generated_response: {e}")
 
+    def play_response_audio(self, response_text):
+        try:
+            # Generate audio for the entire response text
+            audio = generate(
+                text=response_text,
+                model="eleven_multilingual_v2"  # or any other model you prefer
+            )
 
+            # Play the generated audio
+            play(audio)
+
+        except Exception as e:
+            logger.error(f"Error in play_response_audio: {e}")
 #    def play_response_audio(self, response_text):
 #       try:
 #            sentences = re.split('(?<=[.!?]) +', response_text)
@@ -919,3 +923,4 @@ if __name__ == "__main__":
         app.mainloop()
     except Exception as e:
         logger.error(f"Application error: {e}")
+
