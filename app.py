@@ -1,4 +1,4 @@
-import torch
+#import torch
 import tkinter as tk
 import customtkinter
 import threading
@@ -26,20 +26,48 @@ from fastapi import FastAPI, HTTPException, Security, Depends
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
 from collections import Counter
-from bark import SAMPLE_RATE, generate_audio, preload_models
-import sounddevice as sd
-from scipy.io.wavfile import write as write_wav
+#from bark import SAMPLE_RATE, generate_audio, preload_models
+#import sounddevice as sd
+#from scipy.io.wavfile import write as write_wav
 from summa import summarizer
 import nltk
 from textblob import TextBlob
 from weaviate.util import generate_uuid5
 from nltk import pos_tag, word_tokenize
 from nltk.corpus import wordnet as wn
+from datetime import datetime
+import aiosqlite
+import uuid
+import json
+
+
+def generate_uuid_for_weaviate(identifier, namespace=''):
+    if not identifier:
+        raise ValueError("Identifier for UUID generation is empty or None")
+
+
+    if not namespace:
+        namespace = str(uuid.uuid4())
+
+    try:
+
+        return generate_uuid5(namespace, identifier)
+    except Exception as e:
+        logger.error(f"Error generating UUID: {e}")
+        raise
+
+
+def is_valid_uuid(uuid_to_test, version=5):
+    try:
+        uuid_obj = uuid.UUID(uuid_to_test, version=version)
+        return str(uuid_obj) == uuid_to_test
+    except ValueError:
+        return False
+    
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 os.environ["SUNO_USE_SMALL_MODELS"] = "1"
-
-
+executor = ThreadPoolExecutor(max_workers=5)
 bundle_dir = path.abspath(path.dirname(__file__))
 path_to_config = path.join(bundle_dir, 'config.json')
 model_path = path.join(bundle_dir, 'llama-2-7b-chat.ggmlv3.q8_0.bin')
@@ -57,22 +85,96 @@ def get_api_key(api_key_header: str = Security(api_key_header)):
         raise HTTPException(status_code=403, detail="Invalid API Key")
     
 
-async def save_user_message(user_id, user_input):
-    try:
-        async with aiosqlite.connect(DB_NAME) as db:
-            await db.execute("INSERT INTO responses (user_id, response) VALUES (?, ?)", (user_id, user_input))
-            await db.commit()
-    except Exception as e:
-        logger.error(f"Error saving user message to database: {e}")
+def get_current_multiversal_time():
+    current_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    x, y, z, t = 34, 76, 12, 5633
+    return f"X:{x}, Y:{y}, Z:{z}, T:{t}, Time:{current_time}"
 
 
-async def save_bot_response(bot_id, bot_response):
+async def init_db():
     try:
         async with aiosqlite.connect(DB_NAME) as db:
-            await db.execute("INSERT INTO responses (user_id, response) VALUES (?, ?)", (bot_id, bot_response))
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS local_responses (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT,
+                    response TEXT,
+                    response_time TEXT
+                )
+            """)
             await db.commit()
+
+        interaction_history_class = {
+            "class": "InteractionHistory",
+            "properties": [
+                {"name": "user_id", "dataType": ["string"]},
+                {"name": "response", "dataType": ["string"]},
+                {"name": "response_time", "dataType": ["string"]}
+            ]
+        }
+
+        existing_classes = weaviate_client.schema.get()['classes']
+        if not any(cls['class'] == 'InteractionHistory' for cls in existing_classes):
+            weaviate_client.schema.create_class(interaction_history_class)
+
     except Exception as e:
-        logger.error(f"Error saving bot response to database: {e}")
+        logger.error(f"Error during database initialization: {e}")
+        raise
+
+
+def save_user_message(user_id, user_input):
+    try:
+        response_time = get_current_multiversal_time()
+        unique_string = f"{user_id}-{user_input}-{response_time}"
+        generated_uuid = generate_uuid_for_weaviate(unique_string)
+
+        if not is_valid_uuid(generated_uuid):
+            logger.error(f"Invalid UUID generated: {generated_uuid}")
+            return
+
+        data_object = {
+            "user_id": user_id,
+            "response": user_input,
+            "response_time": response_time
+        }
+
+        def db_operations():
+            with aiosqlite.connect(DB_NAME) as db:
+                db.execute("INSERT INTO local_responses (user_id, response, response_time) VALUES (?, ?, ?)",
+                           (user_id, user_input, response_time))
+                db.commit()
+                weaviate_client.data_object.create(data_object, str(generated_uuid), "InteractionHistory")
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        executor.submit(db_operations)
+
+    except Exception as e:
+        logger.error(f"Error saving user message: {e}")
+
+
+def save_bot_response(bot_id, bot_response):
+    try:
+        response_time = get_current_multiversal_time()
+        generated_uuid = str(uuid.uuid4())
+
+        data_object = {
+            "user_id": bot_id,
+            "response": bot_response,
+            "response_time": response_time
+        }
+
+        def db_operations():
+            with aiosqlite.connect(DB_NAME) as db:
+                db.execute("INSERT INTO local_responses (user_id, response, response_time) VALUES (?, ?, ?)",
+                           (bot_id, bot_response, response_time))
+                db.commit()
+                weaviate_client.data_object.create(data_object, generated_uuid, "InteractionHistory")
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        executor.submit(db_operations)
+
+    except Exception as e:
+        logger.error(f"Error saving bot response: {e}")
 
 
 def download_nltk_data():
@@ -108,9 +210,6 @@ DB_NAME = config['DB_NAME']
 API_KEY = config['API_KEY']
 WEAVIATE_ENDPOINT = config['WEAVIATE_ENDPOINT']
 WEAVIATE_QUERY_PATH = config['WEAVIATE_QUERY_PATH']
-client = weaviate.Client(
-    url=WEAVIATE_ENDPOINT,
-)
 weaviate_client = weaviate.Client(url=WEAVIATE_ENDPOINT)
 app = FastAPI()
 
@@ -135,32 +234,6 @@ async def process_input(user_input: UserInput, api_key: str = Depends(get_api_ke
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def init_db():
-    try:
-        async with aiosqlite.connect(DB_NAME) as db:
-
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS responses (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id TEXT,
-                    response TEXT,
-                    response_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id TEXT PRIMARY KEY,
-                    name TEXT,
-                    relationship_state TEXT
-                )
-            """)
-
-            await db.commit()
-    except Exception as e:
-        logger.error(f"Error initializing database: {e}")
-
-
 llm = Llama(
     model_path=model_path,
     n_gpu_layers=-1,
@@ -169,50 +242,50 @@ llm = Llama(
 
 
 def is_code_like(chunk):
-    code_patterns = r'\b(def|class|import|if|else|for|while|return|function|var|let|const|print)\b|[\{\}\(\)=><\+\-\*/]'
-    return bool(re.search(code_patterns, chunk))
+   code_patterns = r'\b(def|class|import|if|else|for|while|return|function|var|let|const|print)\b|[\{\}\(\)=><\+\-\*/]'
+   return bool(re.search(code_patterns, chunk))
 
 
-def determine_token(chunk, max_words_to_check=100):
-    if not chunk:
-        return "[attention]"
+def determine_token(chunk, memory, max_words_to_check=500):
+   combined_chunk = f"{memory} {chunk}"
+   if not combined_chunk:
+       return "[attention]"
 
-    if is_code_like(chunk):
-        return "[code]"
+   if is_code_like(combined_chunk):
+       return "[code]"
 
-    words = word_tokenize(chunk)[:max_words_to_check]
-    tagged_words = pos_tag(words)
+   words = word_tokenize(combined_chunk)[:max_words_to_check]
+   tagged_words = pos_tag(words)
 
-    pos_counts = Counter(tag[:2] for _, tag in tagged_words)
-    most_common_pos, _ = pos_counts.most_common(1)[0]
+   pos_counts = Counter(tag[:2] for _, tag in tagged_words)
+   most_common_pos, _ = pos_counts.most_common(1)[0]
 
-    if most_common_pos == 'VB':
-        return "[action]"
-    elif most_common_pos == 'NN':
-        return "[subject]"
-    elif most_common_pos in ['JJ', 'RB']:
-        return "[description]"
-    else:
-        return "[general]"
+   if most_common_pos == 'VB':
+       return "[action]"
+   elif most_common_pos == 'NN':
+       return "[subject]"
+   elif most_common_pos in ['JJ', 'RB']:
+       return "[description]"
+   else:
+       return "[general]"
 
 
 def find_max_overlap(chunk, next_chunk):
-    max_overlap = min(len(chunk), 400)
-    return next((overlap for overlap in range(max_overlap, 0, -1) if chunk.endswith(next_chunk[:overlap])), 0)
+   max_overlap = min(len(chunk), 240)
+   return next((overlap for overlap in range(max_overlap, 0, -1) if chunk.endswith(next_chunk[:overlap])), 0)
 
 
-def truncate_text(text, max_words=25):
-    return ' '.join(text.split()[:max_words])
+def truncate_text(text, max_words=100):
+   return ' '.join(text.split()[:max_words])
 
 
 def fetch_relevant_info(chunk, weaviate_client, user_input):
-   if not weaviate_client:
-       logger.error("Weaviate client is not provided.")
+   if not user_input:
+       logger.error("User input is None or empty.")
        return ""
 
    summarized_chunk = summarizer.summarize(chunk)
    query_chunk = summarized_chunk if summarized_chunk else chunk
-
 
    if not query_chunk:
        logger.error("Query chunk is empty.")
@@ -221,76 +294,79 @@ def fetch_relevant_info(chunk, weaviate_client, user_input):
    query = {
        "query": {
            "nearText": {
-               "concepts": {user_input},
+               "concepts": [user_input],
                "certainty": 0.7
            }
        }
    }
 
    try:
-       response = weaviate_client.query.raw(query)
-       logger.debug(f"Query sent: {query}")
+       response = weaviate_client.query.raw(json.dumps(query))
+       logger.debug(f"Query sent: {json.dumps(query)}")
        logger.debug(f"Response received: {response}")
 
        if response and 'data' in response and 'Get' in response['data'] and 'InteractionHistory' in response['data']['Get']:
            interaction = response['data']['Get']['InteractionHistory'][0]
            return f"{interaction['user_message']} {interaction['ai_response']}"
        else:
-           logger.error("Weaviate client returned no relevant data for query: " + query)
+           logger.error("Weaviate client returned no relevant data for query: " + json.dumps(query))
            return ""
    except Exception as e:
        logger.error(f"Weaviate query failed: {e}")
        return ""
-    
+   
 
 def llama_generate(prompt, weaviate_client=None, user_input=None):
-    config = load_config()
-    max_tokens = config.get('MAX_TOKENS', 3999)
-    chunk_size = config.get('CHUNK_SIZE', 1250)
-    try:
-        prompt_chunks = [prompt[i:i + chunk_size] for i in range(0, len(prompt), chunk_size)]
-        responses = []
-        last_output = ""
+   config = load_config()
+   max_tokens = config.get('MAX_TOKENS', 2500)
+   chunk_size = config.get('CHUNK_SIZE', 158)
+   try:
+       prompt_chunks = [prompt[i:i + chunk_size] for i in range(0, len(prompt), chunk_size)]
+       responses = []
+       last_output = ""
+       memory = ""
 
-        for i, current_chunk in enumerate(prompt_chunks):
-            relevant_info = fetch_relevant_info(current_chunk, weaviate_client, user_input)
-            combined_chunk = f"{relevant_info} {current_chunk}"
-            token = determine_token(combined_chunk)
-            output = tokenize_and_generate(combined_chunk, token, max_tokens, chunk_size)
+       for i, current_chunk in enumerate(prompt_chunks):
+           relevant_info = fetch_relevant_info(current_chunk, weaviate_client, user_input)
+           combined_chunk = f"{relevant_info} {current_chunk}"
+           token = determine_token(combined_chunk, memory)
+           output = tokenize_and_generate(combined_chunk, token, max_tokens, chunk_size)
 
-            if output is None:
-                logger.error(f"Failed to generate output for chunk: {combined_chunk}")
-                continue
+           if output is None:
+               logger.error(f"Failed to generate output for chunk: {combined_chunk}")
+               continue
 
-            if i > 0 and last_output:
-                overlap = find_max_overlap(last_output, output)
-                output = output[overlap:]
+           if i > 0 and last_output:
+               overlap = find_max_overlap(last_output, output)
+               output = output[overlap:]
 
-            responses.append(output)
-            last_output = output
+           memory += output
+           responses.append(output)
+           last_output = output
 
-        final_response = ''.join(responses)
-        return final_response if final_response else None
-    except Exception as e:
-        logger.error(f"Error in llama_generate: {e}")
-        return None
+       final_response = ''.join(responses)
+       return final_response if final_response else None
+   except Exception as e:
+       logger.error(f"Error in llama_generate: {e}")
+       return None
+
 
 def tokenize_and_generate(chunk, token, max_tokens, chunk_size):
-    try:
-        inputs = llm(f"[{token}] {chunk}", max_tokens=min(max_tokens, chunk_size))
-        if inputs is None or not isinstance(inputs, dict):
-            logger.error(f"Llama model returned invalid output for input: {chunk}")
-            return None
+   try:
+       inputs = llm(f"[{token}] {chunk}", max_tokens=min(max_tokens, chunk_size))
+       if inputs is None or not isinstance(inputs, dict):
+           logger.error(f"Llama model returned invalid output for input: {chunk}")
+           return None
 
-        choices = inputs.get('choices', [])
-        if not choices or not isinstance(choices[0], dict):
-            logger.error("No valid choices in Llama output")
-            return None
+       choices = inputs.get('choices', [])
+       if not choices or not isinstance(choices[0], dict):
+           logger.error("No valid choices in Llama output")
+           return None
 
-        return choices[0].get('text', '')
-    except Exception as e:
-        logger.error(f"Error in tokenize_and_generate: {e}")
-        return None
+       return choices[0].get('text', '')
+   except Exception as e:
+       logger.error(f"Error in tokenize_and_generate: {e}")
+       return None
 
 
 def run_async_in_thread(self, loop, coro_func, user_input, result_queue):
@@ -302,7 +378,7 @@ def run_async_in_thread(self, loop, coro_func, user_input, result_queue):
         loop.close()
 
 
-def truncate_text(self, text, max_length=35):
+def truncate_text(self, text, max_length=55):
     try:
         if not isinstance(text, str):
             raise ValueError("Input must be a string")
@@ -336,6 +412,7 @@ class App(customtkinter.CTk):
         super().__init__()
         self.user_id = user_identifier
         self.bot_id = "bot"
+        self.loop = asyncio.get_event_loop()
         self.setup_gui()
         self.response_queue = queue.Queue()
         self.client = weaviate.Client(url=WEAVIATE_ENDPOINT)
@@ -422,6 +499,7 @@ class App(customtkinter.CTk):
 
         except Exception as e:            
             print(f"Error storing interaction in Weaviate: {e}")
+
 
     def __exit__(self, exc_type, exc_value, traceback):
         self.executor.shutdown(wait=True)
@@ -512,7 +590,7 @@ class App(customtkinter.CTk):
                     }}) {{
                         user_message
                         ai_response
-                        .with_limit(12)  # Adjust the limit as needed
+                        .with_limit(12)
                     }}
                 }}
             }}
@@ -530,28 +608,50 @@ class App(customtkinter.CTk):
 
     async def generate_response(self, user_input):
         try:
+            if not user_input:
+                logger.error("User input is None or empty.")
+                return
+
             user_id = self.user_id
             bot_id = self.bot_id
 
-            await save_user_message(user_id, user_input)
+            
+            if asyncio.iscoroutinefunction(save_user_message):
+                await save_user_message(user_id, user_input)
+            else:
+                
+                save_user_message(user_id, user_input)
 
             include_past_context = "[pastcontext]" in user_input
             user_input = user_input.replace("[pastcontext]", "").replace("[/pastcontext]", "")
-
             past_context = ""
             if include_past_context:
-                past_interactions = await self.retrieve_past_interactions(user_input)
+                result_queue = queue.Queue()
+                
+                if asyncio.iscoroutinefunction(self.retrieve_past_interactions):
+                    await self.retrieve_past_interactions(user_input, result_queue)
+                else:
+                    
+                    self.retrieve_past_interactions(user_input, result_queue)
+
+                past_interactions = result_queue.get() 
                 if past_interactions:
                     past_context_combined = "\n".join([f"User: {interaction['user_message']}\nAI: {interaction['ai_response']}" for interaction in past_interactions])
-                    past_context = past_context_combined[-15:]
+                    past_context = past_context_combined[-1500:]
 
             complete_prompt = f"{past_context}\nUser: {user_input}"
             logger.info(f"Generating response for prompt: {complete_prompt}")
             response = llama_generate(complete_prompt, self.client)
-
             if response:
                 logger.info(f"Generated response: {response}")
-                await save_bot_response(bot_id, response)
+
+                
+                loop = asyncio.get_running_loop()
+                if asyncio.iscoroutinefunction(save_bot_response):
+                    await save_bot_response(bot_id, response)
+                else:
+                    loop.run_in_executor(None, save_bot_response, bot_id, response)
+
                 self.process_generated_response(response)
             else:
                 logger.error("No response generated by llama_generate")
@@ -562,50 +662,50 @@ class App(customtkinter.CTk):
     def process_generated_response(self, response_text):
         try:
             self.response_queue.put({'type': 'text', 'data': response_text})
-            self.play_response_audio(response_text)
+          # self.play_response_audio(response_text)
         except Exception as e:
             logger.error(f"Error in process_generated_response: {e}")
 
 
-    def play_response_audio(self, response_text):
-        try:
-            sentences = re.split('(?<=[.!?]) +', response_text)
-            silence = np.zeros(int(0.75 * SAMPLE_RATE))
-        
-            def generate_sentence_audio(sentence):
-                try:
-                    return generate_audio(sentence, history_prompt="v2/en_speaker_6")
-                except Exception as e:
-                    logger.error(f"Error generating audio for sentence '{sentence}': {e}")
-                    return np.zeros(0)
+#    def play_response_audio(self, response_text):
+#       try:
+#            sentences = re.split('(?<=[.!?]) +', response_text)
+#            silence = np.zeros(int(0.05 * SAMPLE_RATE))
+#        
+#            def generate_sentence_audio(sentence):
+#                try:
+#                    return generate_audio(sentence, history_prompt="v2/en_speaker_6")
+#               except Exception as e:
+#                    logger.error(f"Error generating audio for sentence '{sentence}': {e}")
+#                    return np.zeros(0)
 
-            with ThreadPoolExecutor(max_workers=min(4, len(sentences))) as executor:
-                audio_arrays = list(executor.map(generate_sentence_audio, sentences))
+#            with ThreadPoolExecutor(max_workers=min(1, len(sentences))) as executor:
+#                audio_arrays = list(executor.map(generate_sentence_audio, sentences))
 
 
-            audio_arrays = [audio for audio in audio_arrays if audio.size > 0]
+#            audio_arrays = [audio for audio in audio_arrays if audio.size > 0]
 
-            if audio_arrays:
-                pieces = [piece for audio in audio_arrays for piece in (audio, silence.copy())]
-                audio = np.concatenate(pieces[:-1])
+#            if audio_arrays:
+#                pieces = [piece for audio in audio_arrays for piece in (audio, silence.copy())]
+#                audio = np.concatenate(pieces[:-1])
 
-                file_name = str(uuid.uuid4()) + ".wav"
-                write_wav(file_name, SAMPLE_RATE, audio)
-                sd.play(audio, samplerate=SAMPLE_RATE)
-            else:
-                logger.error("No audio generated due to errors in all sentences.")
+#                file_name = str(uuid.uuid4()) + ".wav"
+#                write_wav(file_name, SAMPLE_RATE, audio)
+#                sd.play(audio, samplerate=SAMPLE_RATE)
+#            else:
+#                logger.error("No audio generated due to errors in all sentences.")
 
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception as e:
-            logger.error(f"Error in play_response_audio: {e}")
+#            if torch.cuda.is_available():
+#                torch.cuda.empty_cache()
+#        except Exception as e:
+#            logger.error(f"Error in play_response_audio: {e}")
 
 
     def run_async_in_thread(self, loop, coro_func, user_input, result_queue):
         asyncio.set_event_loop(loop)
         coro = coro_func(user_input, result_queue)
         loop.run_until_complete(coro)
-
+        
 
     async def fetch_interactions(self):
         try:
@@ -634,10 +734,9 @@ class App(customtkinter.CTk):
 
 
     def on_submit(self, event=None):
-        download_nltk_data()
         user_input = self.input_textbox.get("1.0", tk.END).strip()
         if user_input:
-            self.text_box.insert(tk.END, f"You: {user_input}\n")
+            self.text_box.insert(tk.END, f"{self.user_id}: {user_input}\n")
             self.input_textbox.delete("1.0", tk.END)
             self.input_textbox.config(height=1)
             self.text_box.see(tk.END)
@@ -707,13 +806,13 @@ class App(customtkinter.CTk):
     def prepare_image_generation_payload(self, message):
         return {
             "prompt": message,
-            "steps": 24,
+            "steps": 51,
             "seed": random.randrange(sys.maxsize),
             "enable_hr": "false",
             "denoising_strength": "0.7",
             "cfg_scale": "7",
-            "width": 326,
-            "height": 556,
+            "width": 526,
+            "height": 756,
             "restore_faces": "true",
         }
 
@@ -745,10 +844,20 @@ class App(customtkinter.CTk):
         img_tk.image.save(image_path)
 
 
+    def update_username(self):
+        """Update the username based on the input field."""
+        new_username = self.username_entry.get()
+        if new_username:
+            self.user_id = new_username
+            print(f"Username updated to: {self.user_id}")
+        else:
+            print("Please enter a valid username.")
+
+
     def setup_gui(self):
         self.title("OneLoveIPFS AI")
-        window_width = 1200
-        window_height = 900
+        window_width = 1400
+        window_height = 1000
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         center_x = int(screen_width/2 - window_width/2)
@@ -757,7 +866,7 @@ class App(customtkinter.CTk):
         self.grid_columnconfigure(1, weight=1)
         self.grid_columnconfigure((2, 3), weight=0)
         self.grid_rowconfigure((0, 1, 2), weight=1)
-        self.sidebar_frame = customtkinter.CTkFrame(self, width=440, corner_radius=0)
+        self.sidebar_frame = customtkinter.CTkFrame(self, width=900, corner_radius=0)
         self.sidebar_frame.grid(row=0, column=0, rowspan=4, sticky="nsew")
         logo_img = Image.open(logo_path)
         logo_photo = ImageTk.PhotoImage(logo_img)
@@ -765,7 +874,7 @@ class App(customtkinter.CTk):
         self.logo_label.image = logo_photo
         self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
         self.image_label = customtkinter.CTkLabel(self.sidebar_frame)
-        self.image_label.grid(row=1, column=0, padx=20, pady=10)
+        self.image_label.grid(row=3, column=0, padx=20, pady=10)
         placeholder_image = Image.new('RGB', (140, 140), color = (73, 109, 137))
         self.placeholder_photo = ImageTk.PhotoImage(placeholder_image)
         self.image_label.configure(image=self.placeholder_photo)
@@ -786,6 +895,19 @@ class App(customtkinter.CTk):
         self.send_button = customtkinter.CTkButton(self, text="Send", command=self.on_submit)
         self.send_button.grid(row=3, column=3, padx=(0, 20), pady=(20, 20), sticky="nsew")
         self.input_textbox.bind('<Return>', self.on_submit)
+            # Settings Box for Username
+        self.settings_frame = customtkinter.CTkFrame(self.sidebar_frame, corner_radius=10)
+        self.settings_frame.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
+
+        self.username_label = customtkinter.CTkLabel(self.settings_frame, text="Username:")
+        self.username_label.grid(row=0, column=0, padx=5, pady=5)
+
+        self.username_entry = customtkinter.CTkEntry(self.settings_frame, width=120, placeholder_text="Enter username")
+        self.username_entry.grid(row=0, column=1, padx=5, pady=5)
+        self.username_entry.insert(0, "gray00")  # Default username
+
+        self.update_username_button = customtkinter.CTkButton(self.settings_frame, text="Update", command=self.update_username)
+        self.update_username_button.grid(row=0, column=2, padx=5, pady=5)
 
 
 if __name__ == "__main__":
@@ -793,7 +915,7 @@ if __name__ == "__main__":
         user_id = "gray00"
         app = App(user_id)
         loop = asyncio.get_event_loop()
-        loop.run_until_complete(init_db())
+        asyncio.run(init_db())
         app.mainloop()
     except Exception as e:
         logger.error(f"Application error: {e}")
