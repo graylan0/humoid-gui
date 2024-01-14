@@ -1,4 +1,3 @@
-#import torch
 import tkinter as tk
 import customtkinter
 import threading
@@ -42,6 +41,15 @@ import json
 from elevenlabs import generate, play
 import asyncio
 from elevenlabs import set_api_key
+import weaviate
+from weaviate.embedded import EmbeddedOptions
+
+
+
+
+client = weaviate.Client(
+    embedded_options=EmbeddedOptions()
+)
 
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
@@ -61,6 +69,7 @@ def load_config(file_path=path_to_config):
     with open(file_path, 'r') as file:
         return json.load(file)
 
+
 q = queue.Queue()
 logger = logging.getLogger(__name__)
 config = load_config()
@@ -70,7 +79,6 @@ DB_NAME = config['DB_NAME']
 API_KEY = config['API_KEY']
 WEAVIATE_ENDPOINT = config['WEAVIATE_ENDPOINT']
 WEAVIATE_QUERY_PATH = config['WEAVIATE_QUERY_PATH']
-weaviate_client = weaviate.Client(url=WEAVIATE_ENDPOINT)
 app = FastAPI()
 
 
@@ -143,9 +151,9 @@ async def init_db():
             ]
         }
 
-        existing_classes = weaviate_client.schema.get()['classes']
+        existing_classes = client.schema.get()['classes']
         if not any(cls['class'] == 'InteractionHistory' for cls in existing_classes):
-            weaviate_client.schema.create_class(interaction_history_class)
+            client.schema.create_class(interaction_history_class)
 
     except Exception as e:
         logger.error(f"Error during database initialization: {e}")
@@ -173,7 +181,7 @@ async def save_user_message(user_id, user_input):
                              (user_id, user_input, response_time))
             await db.commit()
 
-        weaviate_client.data_object.create(data_object, str(generated_uuid), "InteractionHistory")
+        client.data_object.create(data_object, str(generated_uuid), "InteractionHistory")
 
     except Exception as e:
         logger.error(f"Error saving user message: {e}")
@@ -194,7 +202,7 @@ async def save_bot_response(bot_id, bot_response):
                              (bot_id, bot_response, response_time))
             await db.commit()
 
-        weaviate_client.data_object.create(data_object, generated_uuid, "InteractionHistory")
+        client.data_object.create(data_object, generated_uuid, "InteractionHistory")
 
     except Exception as e:
         logger.error(f"Error saving bot response: {e}")
@@ -226,7 +234,7 @@ class UserInput(BaseModel):
 @app.post("/process/")
 async def process_input(user_input: UserInput, api_key: str = Depends(get_api_key)):
     try:
-        response = llama_generate(user_input.message, weaviate_client)
+        response = llama_generate(user_input.message, client)
         return {"response": response}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -277,7 +285,7 @@ def truncate_text(text, max_words=100):
    return ' '.join(text.split()[:max_words])
 
 
-def fetch_relevant_info(chunk, weaviate_client, user_input):
+def fetch_relevant_info(chunk, client, user_input):
    if not user_input:
        logger.error("User input is None or empty.")
        return ""
@@ -388,7 +396,6 @@ def truncate_text(self, text, max_length=55):
         print(f"Error in truncate_text: {e}")
         return ""
 
-
 def extract_verbs_and_nouns(text):
     try:
         if not isinstance(text, str):
@@ -424,8 +431,8 @@ class App(customtkinter.CTk):
             concepts_query = ' '.join(keywords)
 
 
-            def fetch_relevant_info(chunk, weaviate_client):
-                if weaviate_client:
+            def fetch_relevant_info(chunk, client):
+                if client:
                     query = f"""
                     {{
                         Get {{
@@ -440,7 +447,7 @@ class App(customtkinter.CTk):
                         }}
                     }}
                     """
-                    response = weaviate_client.query.raw(query)
+                    response = client.query.raw(query)
 
                     if 'data' in response and 'Get' in response['data'] and 'InteractionHistory' in response['data']['Get']:
                         interaction = response['data']['Get']['InteractionHistory'][0]
@@ -613,10 +620,10 @@ class App(customtkinter.CTk):
             user_id = self.user_id
             bot_id = self.bot_id
 
-            # Save user message
+           
             await save_user_message(user_id, user_input)
 
-            # Process the input for context and generate a response
+            
             include_past_context = "[pastcontext]" in user_input
             user_input = user_input.replace("[pastcontext]", "").replace("[/pastcontext]", "")
             past_context = ""
@@ -634,15 +641,15 @@ class App(customtkinter.CTk):
             complete_prompt = f"{past_context}\nUser: {user_input}"
             logger.info(f"Generating response for prompt: {complete_prompt}")
 
-            # Generate response using Llama model
-            response = llama_generate(complete_prompt, self.client)  # llama_generate is called without await
+       
+            response = llama_generate(complete_prompt, self.client)
             if response:
                 logger.info(f"Generated response: {response}")
 
-                # Save bot response
+               
                 await save_bot_response(bot_id, response)
 
-                # Process and display the generated response
+                
                 self.process_generated_response(response)
             else:
                 logger.error("No response generated by llama_generate")
@@ -660,13 +667,13 @@ class App(customtkinter.CTk):
 
     def play_response_audio(self, response_text):
         try:
-            # Generate audio for the entire response text
+           
             audio = generate(
                 text=response_text,
-                model="eleven_multilingual_v2"  # or any other model you prefer
+                model="eleven_multilingual_v2"  
             )
 
-            # Play the generated audio
+            
             play(audio)
 
         except Exception as e:
@@ -856,12 +863,13 @@ class App(customtkinter.CTk):
             print(f"Username updated to: {self.user_id}")
         else:
             print("Please enter a valid username.")
+    
 
 
     def setup_gui(self):
         self.title("OneLoveIPFS AI")
-        window_width = 1400
-        window_height = 1000
+        window_width = 1920
+        window_height = 1080
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         center_x = int(screen_width/2 - window_width/2)
@@ -870,7 +878,12 @@ class App(customtkinter.CTk):
         self.grid_columnconfigure(1, weight=1)
         self.grid_columnconfigure((2, 3), weight=0)
         self.grid_rowconfigure((0, 1, 2), weight=1)
-        self.sidebar_frame = customtkinter.CTkFrame(self, width=900, corner_radius=0)
+        
+        # Configure grid weights
+        self.grid_columnconfigure(0, weight=0)  # Sidebar column
+        self.grid_columnconfigure(1, weight=1)  # Main content column
+        # Adjust other columns as needed
+        self.sidebar_frame = customtkinter.CTkFrame(self, width=350, corner_radius=0)
         self.sidebar_frame.grid(row=0, column=0, rowspan=4, sticky="nsew")
         logo_img = Image.open(logo_path)
         logo_photo = ImageTk.PhotoImage(logo_img)
@@ -878,12 +891,12 @@ class App(customtkinter.CTk):
         self.logo_label.image = logo_photo
         self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
         self.image_label = customtkinter.CTkLabel(self.sidebar_frame)
-        self.image_label.grid(row=3, column=0, padx=20, pady=10)
+        self.image_label.grid(row=1, column=0, padx=20, pady=10)
         placeholder_image = Image.new('RGB', (140, 140), color = (73, 109, 137))
         self.placeholder_photo = ImageTk.PhotoImage(placeholder_image)
         self.image_label.configure(image=self.placeholder_photo)
         self.image_label.image = self.placeholder_photo
-        self.text_box = customtkinter.CTkTextbox(self, bg_color="white", text_color="white", border_width=0, height=260, width=50, font=customtkinter.CTkFont(size=18))
+        self.text_box = customtkinter.CTkTextbox(self, bg_color="white", text_color="white", border_width=0, height=360, width=50, font=customtkinter.CTkFont(size=18))
         self.text_box.grid(row=0, column=1, rowspan=3, columnspan=3, padx=(20, 20), pady=(20, 20), sticky="nsew")
         self.input_textbox_frame = customtkinter.CTkFrame(self)
         self.input_textbox_frame.grid(row=3, column=1, columnspan=2, padx=(20, 0), pady=(20, 20), sticky="nsew")
@@ -901,7 +914,7 @@ class App(customtkinter.CTk):
         self.input_textbox.bind('<Return>', self.on_submit)
             # Settings Box for Username
         self.settings_frame = customtkinter.CTkFrame(self.sidebar_frame, corner_radius=10)
-        self.settings_frame.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
+        self.settings_frame.grid(row=3, column=0, padx=20, pady=10, sticky="ew")
 
         self.username_label = customtkinter.CTkLabel(self.settings_frame, text="Username:")
         self.username_label.grid(row=0, column=0, padx=5, pady=5)
@@ -914,6 +927,7 @@ class App(customtkinter.CTk):
         self.update_username_button.grid(row=0, column=2, padx=5, pady=5)
 
 
+
 if __name__ == "__main__":
     try:
         user_id = "gray00"
@@ -923,4 +937,3 @@ if __name__ == "__main__":
         app.mainloop()
     except Exception as e:
         logger.error(f"Application error: {e}")
-
