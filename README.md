@@ -46,6 +46,8 @@ After downloading the all the 7zip packages part by part and extracting with the
 Thank you contributors and members of the freedomdao community who made this project possible.
 
 
+![image](https://github.com/graylan0/humoid-gui/assets/34530588/7118014e-0698-4c11-9407-1c08fe3fd31a)
+
 
 
 ![image](https://github.com/graylan0/humoid-gui/assets/34530588/b9644ccf-13f0-4600-bfad-b9a45ba5017c)
