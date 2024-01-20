@@ -1,4 +1,3 @@
-#import torch
 import tkinter as tk
 import customtkinter
 import threading
@@ -44,6 +43,10 @@ import asyncio
 from elevenlabs import set_api_key
 import weaviate
 from weaviate.embedded import EmbeddedOptions
+import httpx
+
+
+customtkinter.set_appearance_mode("Dark")  # Force dark mode
 
 
 client = weaviate.Client(
@@ -159,49 +162,65 @@ async def init_db():
         raise
 
 
+
 async def save_user_message(user_id, user_input):
+    logger.info(f"save_user_message called with user_id: {user_id}, user_input: {user_input}")
+
+    if not user_input:
+        logger.error("User input is None or empty.")
+        return
+
     try:
         response_time = get_current_multiversal_time()
-        unique_string = f"{user_id}-{user_input}-{response_time}"
-        generated_uuid = generate_uuid_for_weaviate(unique_string)
-
-        if not is_valid_uuid(generated_uuid):
-            logger.error(f"Invalid UUID generated: {generated_uuid}")
-            return
-
         data_object = {
             "user_id": user_id,
             "response": user_input,
             "response_time": response_time
         }
+        generated_uuid = generate_uuid5(data_object)
 
         async with aiosqlite.connect(DB_NAME) as db:
             await db.execute("INSERT INTO local_responses (user_id, response, response_time) VALUES (?, ?, ?)",
                              (user_id, user_input, response_time))
             await db.commit()
 
-        client.data_object.create(data_object, str(generated_uuid), "InteractionHistory")
+        async with httpx.AsyncClient() as client:
+            await client.post('http://127.0.0.1:8079/v1/objects', json={
+                "class": "InteractionHistory",
+                "id": generated_uuid,
+                "properties": data_object
+            })
 
     except Exception as e:
         logger.error(f"Error saving user message: {e}")
 
 async def save_bot_response(bot_id, bot_response):
+    logger.info(f"save_bot_response called with bot_id: {bot_id}, bot_response: {bot_response}")
+
+    if not bot_response:
+        logger.error("Bot response is None or empty.")
+        return
+
     try:
         response_time = get_current_multiversal_time()
-        generated_uuid = str(uuid.uuid4())
-
         data_object = {
             "user_id": bot_id,
             "response": bot_response,
             "response_time": response_time
         }
+        generated_uuid = generate_uuid5(data_object)
 
         async with aiosqlite.connect(DB_NAME) as db:
             await db.execute("INSERT INTO local_responses (user_id, response, response_time) VALUES (?, ?, ?)",
                              (bot_id, bot_response, response_time))
             await db.commit()
 
-        client.data_object.create(data_object, generated_uuid, "InteractionHistory")
+        async with httpx.AsyncClient() as client:
+            await client.post('http://127.0.0.1:8079/v1/objects', json={
+                "class": "InteractionHistory",
+                "id": generated_uuid,
+                "properties": data_object
+            })
 
     except Exception as e:
         logger.error(f"Error saving bot response: {e}")
@@ -862,12 +881,15 @@ class App(customtkinter.CTk):
             print(f"Username updated to: {self.user_id}")
         else:
             print("Please enter a valid username.")
+    
 
 
     def setup_gui(self):
+        customtkinter.set_appearance_mode("Dark") 
         self.title("OneLoveIPFS AI")
-        window_width = 1400
-        window_height = 1000
+        window_width = 1920
+        window_height = 1080
+        
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         center_x = int(screen_width/2 - window_width/2)
@@ -876,48 +898,60 @@ class App(customtkinter.CTk):
         self.grid_columnconfigure(1, weight=1)
         self.grid_columnconfigure((2, 3), weight=0)
         self.grid_rowconfigure((0, 1, 2), weight=1)
-        self.sidebar_frame = customtkinter.CTkFrame(self, width=900, corner_radius=0)
+        
+        # Sidebar configuration
+        self.sidebar_frame = customtkinter.CTkFrame(self, width=350, corner_radius=0)
         self.sidebar_frame.grid(row=0, column=0, rowspan=4, sticky="nsew")
-        logo_img = Image.open(logo_path)
+        
+        # Logo configuration
+        logo_img = Image.open(logo_path)  # Replace 'logo_path' with your logo image path
         logo_photo = ImageTk.PhotoImage(logo_img)
         self.logo_label = customtkinter.CTkLabel(self.sidebar_frame, image=logo_photo)
         self.logo_label.image = logo_photo
         self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
+
+        # Image label configuration
         self.image_label = customtkinter.CTkLabel(self.sidebar_frame)
-        self.image_label.grid(row=3, column=0, padx=20, pady=10)
-        placeholder_image = Image.new('RGB', (140, 140), color = (73, 109, 137))
+        self.image_label.grid(row=1, column=0, padx=20, pady=10)
+        placeholder_image = Image.new('RGB', (140, 140), color=(73, 109, 137))
         self.placeholder_photo = ImageTk.PhotoImage(placeholder_image)
         self.image_label.configure(image=self.placeholder_photo)
         self.image_label.image = self.placeholder_photo
-        self.text_box = customtkinter.CTkTextbox(self, bg_color="white", text_color="white", border_width=0, height=260, width=50, font=customtkinter.CTkFont(size=18))
+
+        # Main text box configuration
+        self.text_box = customtkinter.CTkTextbox(self, bg_color="black", text_color="white", border_width=0, height=360, width=50, font=customtkinter.CTkFont(size=23))
         self.text_box.grid(row=0, column=1, rowspan=3, columnspan=3, padx=(20, 20), pady=(20, 20), sticky="nsew")
+
+        # Input textbox configuration
         self.input_textbox_frame = customtkinter.CTkFrame(self)
         self.input_textbox_frame.grid(row=3, column=1, columnspan=2, padx=(20, 0), pady=(20, 20), sticky="nsew")
         self.input_textbox_frame.grid_columnconfigure(0, weight=1)
         self.input_textbox_frame.grid_rowconfigure(0, weight=1)
-        self.input_textbox = tk.Text(self.input_textbox_frame, font=("Roboto Medium", 10),
+        self.input_textbox = tk.Text(self.input_textbox_frame, font=("Roboto Medium", 12),
                                      bg=customtkinter.ThemeManager.theme["CTkFrame"]["fg_color"][1 if customtkinter.get_appearance_mode() == "Dark" else 0],
                                      fg=customtkinter.ThemeManager.theme["CTkLabel"]["text_color"][1 if customtkinter.get_appearance_mode() == "Dark" else 0], relief="flat", height=1)
         self.input_textbox.grid(padx=20, pady=20, sticky="nsew")
         self.input_textbox_scrollbar = customtkinter.CTkScrollbar(self.input_textbox_frame, command=self.input_textbox.yview)
         self.input_textbox_scrollbar.grid(row=0, column=1, sticky="ns", pady=5)
         self.input_textbox.configure(yscrollcommand=self.input_textbox_scrollbar.set)
+
+        # Send button configuration
         self.send_button = customtkinter.CTkButton(self, text="Send", command=self.on_submit)
         self.send_button.grid(row=3, column=3, padx=(0, 20), pady=(20, 20), sticky="nsew")
         self.input_textbox.bind('<Return>', self.on_submit)
 
+        # Settings box for username
         self.settings_frame = customtkinter.CTkFrame(self.sidebar_frame, corner_radius=10)
-        self.settings_frame.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
-
+        self.settings_frame.grid(row=3, column=0, padx=20, pady=10, sticky="ew")
         self.username_label = customtkinter.CTkLabel(self.settings_frame, text="Username:")
         self.username_label.grid(row=0, column=0, padx=5, pady=5)
-
         self.username_entry = customtkinter.CTkEntry(self.settings_frame, width=120, placeholder_text="Enter username")
         self.username_entry.grid(row=0, column=1, padx=5, pady=5)
         self.username_entry.insert(0, "gray00")
-
         self.update_username_button = customtkinter.CTkButton(self.settings_frame, text="Update", command=self.update_username)
         self.update_username_button.grid(row=0, column=2, padx=5, pady=5)
+
+
 
 
 if __name__ == "__main__":
