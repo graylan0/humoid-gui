@@ -1,3 +1,4 @@
+import torch
 import tkinter as tk
 import customtkinter
 import threading
@@ -25,14 +26,16 @@ from fastapi import FastAPI, HTTPException, Security, Depends
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
 from collections import Counter
-#from bark import SAMPLE_RATE, generate_audio, preload_models
-#import sounddevice as sd
-#from scipy.io.wavfile import write as write_wav
+from bark import SAMPLE_RATE, generate_audio, preload_models
+import sounddevice as sd
+from scipy.io.wavfile import write as write_wav
 from summa import summarizer
 import nltk
 from textblob import TextBlob
 from weaviate.util import generate_uuid5
 from nltk import pos_tag, word_tokenize
+import httpx
+from weaviate.util import generate_uuid5
 from nltk.corpus import wordnet as wn
 from datetime import datetime
 import aiosqlite
@@ -41,21 +44,18 @@ import json
 from elevenlabs import generate, play
 import asyncio
 from elevenlabs import set_api_key
-import weaviate
-from weaviate.embedded import EmbeddedOptions
-import httpx
+import concurrent.futures
+from weaviate.util import generate_uuid5
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+os.environ["SUNO_USE_SMALL_MODELS"] = "True"
+os.environ["SUNO_OFFLOAD_CPU"] = "false"
 
 
-customtkinter.set_appearance_mode("Dark")  # Force dark mode
 
 
-client = weaviate.Client(
-    embedded_options=EmbeddedOptions()
-)
-
-
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-os.environ["SUNO_USE_SMALL_MODELS"] = "1"
 executor = ThreadPoolExecutor(max_workers=5)
 bundle_dir = path.abspath(path.dirname(__file__))
 path_to_config = path.join(bundle_dir, 'config.json')
@@ -71,16 +71,18 @@ def load_config(file_path=path_to_config):
     with open(file_path, 'r') as file:
         return json.load(file)
 
-
 q = queue.Queue()
-logger = logging.getLogger(__name__)
+
 config = load_config()
 ELEVEN_LABS_KEY =  config['ELEVEN_LABS_KEY']
 set_api_key(ELEVEN_LABS_KEY)
 DB_NAME = config['DB_NAME']
 API_KEY = config['API_KEY']
 WEAVIATE_ENDPOINT = config['WEAVIATE_ENDPOINT']
-WEAVIATE_QUERY_PATH = config['WEAVIATE_QUERY_PATH']
+WEAVIATE_ENDPOINT = config['WEAVIATE_ENDPOINT']
+WEAVIATE_API_URL = config['WEAVIATE_API_URL']
+weaviate_client = weaviate.Client(url=WEAVIATE_ENDPOINT)
+weaviate_api_url = WEAVIATE_API_URL
 app = FastAPI()
 
 
@@ -94,25 +96,13 @@ API_KEY_NAME = "access_token"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
 
-def generate_uuid_for_weaviate(identifier, namespace=''):
-    if not identifier:
-        raise ValueError("Identifier for UUID generation is empty or None")
+def generate_uuid_for_weaviate():
+    return str(uuid.uuid4())
 
 
-    if not namespace:
-        namespace = str(uuid.uuid4())
-
+def is_valid_uuid(uuid_to_test):
     try:
-
-        return generate_uuid5(namespace, identifier)
-    except Exception as e:
-        logger.error(f"Error generating UUID: {e}")
-        raise
-
-
-def is_valid_uuid(uuid_to_test, version=5):
-    try:
-        uuid_obj = uuid.UUID(uuid_to_test, version=version)
+        uuid_obj = uuid.UUID(uuid_to_test, version=4)
         return str(uuid_obj) == uuid_to_test
     except ValueError:
         return False
@@ -153,14 +143,13 @@ async def init_db():
             ]
         }
 
-        existing_classes = client.schema.get()['classes']
+        existing_classes = weaviate_client.schema.get()['classes']
         if not any(cls['class'] == 'InteractionHistory' for cls in existing_classes):
-            client.schema.create_class(interaction_history_class)
+            weaviate_client.schema.create_class(interaction_history_class)
 
     except Exception as e:
         logger.error(f"Error during database initialization: {e}")
         raise
-
 
 
 async def save_user_message(user_id, user_input):
@@ -185,7 +174,7 @@ async def save_user_message(user_id, user_input):
             await db.commit()
 
         async with httpx.AsyncClient() as client:
-            await client.post('http://127.0.0.1:8079/v1/objects', json={
+            await client.post(weaviate_api_url, json={
                 "class": "InteractionHistory",
                 "id": generated_uuid,
                 "properties": data_object
@@ -216,7 +205,7 @@ async def save_bot_response(bot_id, bot_response):
             await db.commit()
 
         async with httpx.AsyncClient() as client:
-            await client.post('http://127.0.0.1:8079/v1/objects', json={
+            await client.post(weaviate_api_url, json={
                 "class": "InteractionHistory",
                 "id": generated_uuid,
                 "properties": data_object
@@ -252,7 +241,7 @@ class UserInput(BaseModel):
 @app.post("/process/")
 async def process_input(user_input: UserInput, api_key: str = Depends(get_api_key)):
     try:
-        response = llama_generate(user_input.message, client)
+        response = llama_generate(user_input.message, weaviate_client)
         return {"response": response}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -303,7 +292,7 @@ def truncate_text(text, max_words=100):
    return ' '.join(text.split()[:max_words])
 
 
-def fetch_relevant_info(chunk, client, user_input):
+def fetch_relevant_info(chunk, weaviate_client, user_input):
    if not user_input:
        logger.error("User input is None or empty.")
        return ""
@@ -414,6 +403,7 @@ def truncate_text(self, text, max_length=55):
         print(f"Error in truncate_text: {e}")
         return ""
 
+
 def extract_verbs_and_nouns(text):
     try:
         if not isinstance(text, str):
@@ -449,8 +439,8 @@ class App(customtkinter.CTk):
             concepts_query = ' '.join(keywords)
 
 
-            def fetch_relevant_info(chunk, client):
-                if client:
+            def fetch_relevant_info(chunk, weaviate_client):
+                if weaviate_client:
                     query = f"""
                     {{
                         Get {{
@@ -465,7 +455,7 @@ class App(customtkinter.CTk):
                         }}
                     }}
                     """
-                    response = client.query.raw(query)
+                    response = weaviate_client.query.raw(query)
 
                     if 'data' in response and 'Get' in response['data'] and 'InteractionHistory' in response['data']['Get']:
                         interaction = response['data']['Get']['InteractionHistory'][0]
@@ -683,52 +673,53 @@ class App(customtkinter.CTk):
         except Exception as e:
             logger.error(f"Error in process_generated_response: {e}")
 
-    def play_response_audio(self, response_text):
-        try:
-           
-            audio = generate(
-                text=response_text,
-                model="eleven_multilingual_v2"  
-            )
+#    def play_response_audio(self, response_text):
+#        try:
+#           
+#            audio = generate(
+##                text=response_text,
+ #               voice="Bill",
+#                model="eleven_multilingual_v2"  
+#            )
 
             
-            play(audio)
+#            play(audio)
 
+    def play_response_audio(self, response_text):
+        try:
+            sentences = re.split('(?<=[.!?]) +', response_text)
+            silence = np.zeros(int(0.75 * SAMPLE_RATE))
+
+            def generate_sentence_audio(sentence):
+                try:
+                    return generate_audio(sentence, history_prompt="v2/en_speaker_6")
+                except Exception as e:
+                    logger.error(f"Error generating audio for sentence '{sentence}': {e}")
+                    return np.zeros(0)
+
+            with ThreadPoolExecutor(max_workers=min(2, len(sentences))) as executor:
+                futures = [executor.submit(generate_sentence_audio, sentence) for sentence in sentences]
+
+            audio_arrays = []
+            for future in concurrent.futures.as_completed(futures):
+                audio = future.result()
+                if audio.size > 0:
+                    audio_arrays.append(audio)
+
+            if audio_arrays:
+                pieces = [piece for audio in audio_arrays for piece in (audio, silence.copy())]
+                audio = np.concatenate(pieces[:-1])
+
+                file_name = str(uuid.uuid4()) + ".wav"
+                write_wav(file_name, SAMPLE_RATE, audio)
+                sd.play(audio, samplerate=SAMPLE_RATE)
+            else:
+                logger.error("No audio generated due to errors in all sentences.")
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         except Exception as e:
             logger.error(f"Error in play_response_audio: {e}")
-#    def play_response_audio(self, response_text):
-#       try:
-#            sentences = re.split('(?<=[.!?]) +', response_text)
-#            silence = np.zeros(int(0.05 * SAMPLE_RATE))
-#        
-#            def generate_sentence_audio(sentence):
-#                try:
-#                    return generate_audio(sentence, history_prompt="v2/en_speaker_6")
-#               except Exception as e:
-#                    logger.error(f"Error generating audio for sentence '{sentence}': {e}")
-#                    return np.zeros(0)
-
-#            with ThreadPoolExecutor(max_workers=min(1, len(sentences))) as executor:
-#                audio_arrays = list(executor.map(generate_sentence_audio, sentences))
-
-
-#            audio_arrays = [audio for audio in audio_arrays if audio.size > 0]
-
-#            if audio_arrays:
-#                pieces = [piece for audio in audio_arrays for piece in (audio, silence.copy())]
-#                audio = np.concatenate(pieces[:-1])
-
-#                file_name = str(uuid.uuid4()) + ".wav"
-#                write_wav(file_name, SAMPLE_RATE, audio)
-#                sd.play(audio, samplerate=SAMPLE_RATE)
-#            else:
-#                logger.error("No audio generated due to errors in all sentences.")
-
-#            if torch.cuda.is_available():
-#                torch.cuda.empty_cache()
-#        except Exception as e:
-#            logger.error(f"Error in play_response_audio: {e}")
-
 
     def run_async_in_thread(self, loop, coro_func, user_input, result_queue):
         asyncio.set_event_loop(loop)
@@ -798,7 +789,7 @@ class App(customtkinter.CTk):
             while True:
                 response = self.response_queue.get_nowait()
                 if response['type'] == 'text':
-                    self.text_box.insert(tk.END, f"AI: {response['data']}\n")
+                    self.text_box.insert(tk.END, f"\n  \n \n AI: {response['data']}\n")
                 elif response['type'] == 'image':
                     self.image_label.configure(image=response['data'])
                     self.image_label.image = response['data']
@@ -869,8 +860,16 @@ class App(customtkinter.CTk):
         file_name = f"generated_image_{uuid.uuid4()}.png"
         image_path = os.path.join("saved_images", file_name)
         if not os.path.exists("saved_images"):
-            os.makedirs("saved_images")
-        img_tk.image.save(image_path)
+            try:
+                os.makedirs("saved_images")
+            except OSError as e:
+                logger.error(f"Error creating directory: {e}")
+                return
+        try:
+            img_tk.image.save(image_path)
+            print(f"Image saved to {image_path}")
+        except IOError as e:
+            logger.error(f"Error saving image: {e}")
 
 
     def update_username(self):
@@ -881,15 +880,13 @@ class App(customtkinter.CTk):
             print(f"Username updated to: {self.user_id}")
         else:
             print("Please enter a valid username.")
-    
 
 
     def setup_gui(self):
-        customtkinter.set_appearance_mode("Dark") 
-        self.title("OneLoveIPFS AI")
-        window_width = 1920
-        window_height = 1080
         
+        self.title("OneLoveIPFS AI")
+        window_width = 1400
+        window_height = 1000
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         center_x = int(screen_width/2 - window_width/2)
@@ -898,60 +895,48 @@ class App(customtkinter.CTk):
         self.grid_columnconfigure(1, weight=1)
         self.grid_columnconfigure((2, 3), weight=0)
         self.grid_rowconfigure((0, 1, 2), weight=1)
-        
-        # Sidebar configuration
-        self.sidebar_frame = customtkinter.CTkFrame(self, width=350, corner_radius=0)
+        self.sidebar_frame = customtkinter.CTkFrame(self, width=900, corner_radius=0)
         self.sidebar_frame.grid(row=0, column=0, rowspan=4, sticky="nsew")
-        
-        # Logo configuration
-        logo_img = Image.open(logo_path)  # Replace 'logo_path' with your logo image path
+        logo_img = Image.open(logo_path)
         logo_photo = ImageTk.PhotoImage(logo_img)
         self.logo_label = customtkinter.CTkLabel(self.sidebar_frame, image=logo_photo)
         self.logo_label.image = logo_photo
         self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
-
-        # Image label configuration
         self.image_label = customtkinter.CTkLabel(self.sidebar_frame)
-        self.image_label.grid(row=1, column=0, padx=20, pady=10)
-        placeholder_image = Image.new('RGB', (140, 140), color=(73, 109, 137))
+        self.image_label.grid(row=3, column=0, padx=20, pady=10)
+        placeholder_image = Image.new('RGB', (140, 140), color = (73, 109, 137))
         self.placeholder_photo = ImageTk.PhotoImage(placeholder_image)
         self.image_label.configure(image=self.placeholder_photo)
         self.image_label.image = self.placeholder_photo
-
-        # Main text box configuration
-        self.text_box = customtkinter.CTkTextbox(self, bg_color="black", text_color="white", border_width=0, height=360, width=50, font=customtkinter.CTkFont(size=23))
+        self.text_box = customtkinter.CTkTextbox(self, bg_color="white", text_color="white", border_width=0, height=260, width=50, font=customtkinter.CTkFont(size=20))
         self.text_box.grid(row=0, column=1, rowspan=3, columnspan=3, padx=(20, 20), pady=(20, 20), sticky="nsew")
-
-        # Input textbox configuration
         self.input_textbox_frame = customtkinter.CTkFrame(self)
         self.input_textbox_frame.grid(row=3, column=1, columnspan=2, padx=(20, 0), pady=(20, 20), sticky="nsew")
         self.input_textbox_frame.grid_columnconfigure(0, weight=1)
         self.input_textbox_frame.grid_rowconfigure(0, weight=1)
-        self.input_textbox = tk.Text(self.input_textbox_frame, font=("Roboto Medium", 12),
+        self.input_textbox = tk.Text(self.input_textbox_frame, font=("Roboto Medium", 13),
                                      bg=customtkinter.ThemeManager.theme["CTkFrame"]["fg_color"][1 if customtkinter.get_appearance_mode() == "Dark" else 0],
                                      fg=customtkinter.ThemeManager.theme["CTkLabel"]["text_color"][1 if customtkinter.get_appearance_mode() == "Dark" else 0], relief="flat", height=1)
         self.input_textbox.grid(padx=20, pady=20, sticky="nsew")
         self.input_textbox_scrollbar = customtkinter.CTkScrollbar(self.input_textbox_frame, command=self.input_textbox.yview)
         self.input_textbox_scrollbar.grid(row=0, column=1, sticky="ns", pady=5)
         self.input_textbox.configure(yscrollcommand=self.input_textbox_scrollbar.set)
-
-        # Send button configuration
         self.send_button = customtkinter.CTkButton(self, text="Send", command=self.on_submit)
         self.send_button.grid(row=3, column=3, padx=(0, 20), pady=(20, 20), sticky="nsew")
         self.input_textbox.bind('<Return>', self.on_submit)
 
-        # Settings box for username
         self.settings_frame = customtkinter.CTkFrame(self.sidebar_frame, corner_radius=10)
-        self.settings_frame.grid(row=3, column=0, padx=20, pady=10, sticky="ew")
+        self.settings_frame.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
+
         self.username_label = customtkinter.CTkLabel(self.settings_frame, text="Username:")
         self.username_label.grid(row=0, column=0, padx=5, pady=5)
+
         self.username_entry = customtkinter.CTkEntry(self.settings_frame, width=120, placeholder_text="Enter username")
         self.username_entry.grid(row=0, column=1, padx=5, pady=5)
         self.username_entry.insert(0, "gray00")
+
         self.update_username_button = customtkinter.CTkButton(self.settings_frame, text="Update", command=self.update_username)
         self.update_username_button.grid(row=0, column=2, padx=5, pady=5)
-
-
 
 
 if __name__ == "__main__":
