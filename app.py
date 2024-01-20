@@ -41,9 +41,9 @@ from datetime import datetime
 import aiosqlite
 import uuid
 import json
-from elevenlabs import generate, play
+#rom elevenlabs import generate, play
 import asyncio
-from elevenlabs import set_api_key
+#from elevenlabs import set_api_key
 import concurrent.futures
 from weaviate.util import generate_uuid5
 
@@ -75,7 +75,7 @@ q = queue.Queue()
 
 config = load_config()
 ELEVEN_LABS_KEY =  config['ELEVEN_LABS_KEY']
-set_api_key(ELEVEN_LABS_KEY)
+#set_api_key(ELEVEN_LABS_KEY)
 DB_NAME = config['DB_NAME']
 API_KEY = config['API_KEY']
 WEAVIATE_ENDPOINT = config['WEAVIATE_ENDPOINT']
@@ -842,8 +842,11 @@ class App(customtkinter.CTk):
             image_data = response.json()['images']
             for img_data in image_data:
                 img_tk = self.convert_base64_to_tk(img_data)
-                self.response_queue.put({'type': 'image', 'data': img_tk})
-                self.save_generated_image(img_tk)
+                if img_tk is not None:
+                    self.response_queue.put({'type': 'image', 'data': img_tk})
+                    self.save_generated_image(img_tk)
+                else:
+                    logger.error("Failed to convert base64 to tk")
         except ValueError as e:
             logger.error("Error processing image data: ", e)
 
@@ -852,21 +855,21 @@ class App(customtkinter.CTk):
         if ',' in base64_data:
             base64_data = base64_data.split(",", 1)[1]
         image_data = base64.b64decode(base64_data)
-        image = Image.open(io.BytesIO(image_data))
-        return ImageTk.PhotoImage(image)
+        try:
+            image = Image.open(io.BytesIO(image_data))
+            return ImageTk.PhotoImage(image)
+        except Exception as e:
+            logger.error(f"Error converting base64 to tk: {e}")
+            return None
 
 
     def save_generated_image(self, img_tk):
         file_name = f"generated_image_{uuid.uuid4()}.png"
         image_path = os.path.join("saved_images", file_name)
         if not os.path.exists("saved_images"):
-            try:
-                os.makedirs("saved_images")
-            except OSError as e:
-                logger.error(f"Error creating directory: {e}")
-                return
+            os.makedirs("saved_images")
         try:
-            img_tk.image.save(image_path)
+            img_tk.save(image_path)
             print(f"Image saved to {image_path}")
         except IOError as e:
             logger.error(f"Error saving image: {e}")
@@ -883,7 +886,7 @@ class App(customtkinter.CTk):
 
 
     def setup_gui(self):
-        
+
         self.title("OneLoveIPFS AI")
         window_width = 1400
         window_height = 1000
@@ -948,3 +951,4 @@ if __name__ == "__main__":
         app.mainloop()
     except Exception as e:
         logger.error(f"Application error: {e}")
+
