@@ -1,10 +1,12 @@
 {
     "DB_NAME": "story_generator.db",
-    "WEAVIATE_ENDPOINT": "https://endpointhere",
+    "WEAVIATE_ENDPOINT": "http://localhost:8079",
     "WEAVIATE_QUERY_PATH": "/v1/graphql",
     "LLAMA_MODEL_PATH": "llama-2-7b-chat.ggmlv3.q8_0.bin",
     "IMAGE_GENERATION_URL": "http://127.0.0.1:7860/sdapi/v1/txt2img",
     "MAX_TOKENS": 3999,
     "CHUNK_SIZE": 1250,
-    "API_KEY": "APIKEYHERE"
+    "API_KEY": "generateapikeyhere",
+    "WEAVIATE_API_URL": "http://localhost:8079/v1/objects",
+    "ELEVEN_LABS_KEY": "apikyhere"
 }
