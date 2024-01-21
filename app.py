@@ -250,7 +250,7 @@ async def process_input(user_input: UserInput, api_key: str = Depends(get_api_ke
 llm = Llama(
     model_path=model_path,
     n_gpu_layers=-1,
-    n_ctx=3900,
+    n_ctx=3990,
 )
 
 
@@ -259,7 +259,7 @@ def is_code_like(chunk):
    return bool(re.search(code_patterns, chunk))
 
 
-def determine_token(chunk, memory, max_words_to_check=500):
+def determine_token(chunk, memory, max_words_to_check=1100):
    combined_chunk = f"{memory} {chunk}"
    if not combined_chunk:
        return "[attention]"
@@ -284,11 +284,11 @@ def determine_token(chunk, memory, max_words_to_check=500):
 
 
 def find_max_overlap(chunk, next_chunk):
-   max_overlap = min(len(chunk), 240)
+   max_overlap = min(len(chunk), 540)
    return next((overlap for overlap in range(max_overlap, 0, -1) if chunk.endswith(next_chunk[:overlap])), 0)
 
 
-def truncate_text(text, max_words=100):
+def truncate_text(text, max_words=600):
    return ' '.join(text.split()[:max_words])
 
 
@@ -331,8 +331,8 @@ def fetch_relevant_info(chunk, weaviate_client, user_input):
 
 def llama_generate(prompt, weaviate_client=None, user_input=None):
    config = load_config()
-   max_tokens = config.get('MAX_TOKENS', 2500)
-   chunk_size = config.get('CHUNK_SIZE', 158)
+   max_tokens = config.get('MAX_TOKENS', 3990)
+   chunk_size = config.get('CHUNK_SIZE', 1558)
    try:
        prompt_chunks = [prompt[i:i + chunk_size] for i in range(0, len(prompt), chunk_size)]
        responses = []
@@ -391,7 +391,7 @@ def run_async_in_thread(self, loop, coro_func, user_input, result_queue):
         loop.close()
 
 
-def truncate_text(self, text, max_length=55):
+def truncate_text(self, text, max_length=95):
     try:
         if not isinstance(text, str):
             raise ValueError("Input must be a string")
@@ -869,7 +869,8 @@ class App(customtkinter.CTk):
         if not os.path.exists("saved_images"):
             os.makedirs("saved_images")
         try:
-            img_tk.save(image_path)
+            img_pil = ImageTk.getimage(img_tk)
+            img_pil.save(image_path)
             print(f"Image saved to {image_path}")
         except IOError as e:
             logger.error(f"Error saving image: {e}")
@@ -951,4 +952,3 @@ if __name__ == "__main__":
         app.mainloop()
     except Exception as e:
         logger.error(f"Application error: {e}")
-
