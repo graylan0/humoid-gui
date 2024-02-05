@@ -6,6 +6,7 @@
 ![image](https://github.com/graylan0/humoid-gui/assets/34530588/7fd5a62d-02a5-4d0e-b33f-edb04d923f55)
 
 
+note: needs new fastapi +pydantic, have no idea why, it's broken the linux Executable.    fastapi-0.109.2 starlette-0.36.3 pydantic-2.6.0 pydantic-core-2.16.1
 
 
 
